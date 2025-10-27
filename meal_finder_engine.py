@@ -7,7 +7,7 @@ import math
 import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-import google.generativeai as genai
+from google import genai
 
 # =============================================================================
 # --- BACKEND LOGIC (The Meal Finding Engine) ---
