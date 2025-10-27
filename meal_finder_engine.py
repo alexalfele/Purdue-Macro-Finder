@@ -147,7 +147,7 @@ class MealFinder:
         if not API_KEY:
             return {"error": "AI service is not configured."}
         genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel('gemini-pro')
+        model = genai.GenerativeModel('gemini-1.5-pro-latest')
 
         # --- 2. Get the menu data (same as before) ---
         if not self.data_loaded:
