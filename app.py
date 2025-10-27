@@ -66,6 +66,7 @@ def api_get_top_foods():
     except Exception as e:
         print(f"Error in /api/top_foods: {e}")
         return jsonify({"error": str(e)}), 500
+
 # --- 5b. CREATE THE API ENDPOINT FOR AI SUGGESTION ---
 @app.route("/api/suggest_meal", methods=["POST"])
 def api_suggest_meal():
@@ -73,17 +74,16 @@ def api_suggest_meal():
         data = request.json
         court = data.get('court')
         meal = data.get('meal')
-
+        
         if not court or not meal:
             return jsonify({"error": "Court and meal period are required."}), 400
-
+            
         suggestion = meal_finder_engine.get_ai_suggestion(court, meal)
         return jsonify(suggestion)
-
+        
     except Exception as e:
         print(f"Error in /api/suggest_meal: {e}")
         return jsonify({"error": str(e)}), 500
-
 
 # --- 6. START THE SERVER ---
 if __name__ == "__main__":
