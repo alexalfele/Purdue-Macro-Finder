@@ -147,7 +147,7 @@ class MealFinder:
         API_KEY = os.environ.get("GEMINI_API_KEY")
         if not API_KEY:
             return {"error": "AI service is not configured."}
-
+        
         # --- 2. Get the menu data (same as before) ---
         if not self.data_loaded:
             self._load_all_menu_data()
@@ -185,7 +185,9 @@ class MealFinder:
 
         # --- 5. Call the API using the new Client method ---
         try:
-            # Use the new genai.Client() method from the quickstart
+            # THIS IS THE FIX:
+            # We removed `genai.configure()`
+            # And we pass the API key directly to the client.
             client = genai.Client(api_key=API_KEY)
             
             # Use the model name from the quickstart
