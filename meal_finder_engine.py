@@ -171,12 +171,12 @@ class MealFinder:
         # We're asking the AI to act as a nutritionist and return *only* a JSON list
         prompt = f"""
         You are a Purdue University dining hall nutritionist. 
-        Your goal is to help a student pick a balanced, healthy meal.
+        Your goal is to help a student pick a balanced, healthy, and protein rich meal.
         
         Here is the full list of available foods:
         {food_list_str}
         
-        From that list, please select 3-4 items that make a healthy, balanced meal. 
+        From that list, please select 3-5 items that make a healthy, balanced meal. 
         Prioritize a lean protein, a vegetable or fruit, and a whole-grain carb.
         
         Return your answer as ONLY a valid JSON list of the exact food names. Do not add any other text.
