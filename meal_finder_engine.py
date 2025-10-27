@@ -7,9 +7,7 @@ import math
 import os
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from google import genai
-from google.genai import types
-
+import google.generativeai as genai
 
 # =============================================================================
 # --- BACKEND LOGIC (The Meal Finding Engine) ---
@@ -141,15 +139,17 @@ class MealFinder:
 
     def get_ai_suggestion(self, court_name, meal_name):
         """
-        Uses the Google Gemini API to suggest a balanced, healthy meal.
+        Uses the Google Gemini API (with the new Client method) 
+        to suggest a balanced, healthy meal.
         """
         # --- 1. Configure the API ---
         # This securely gets the key you just added to Render.
         API_KEY = os.environ.get("GEMINI_API_KEY")
         if not API_KEY:
             return {"error": "AI service is not configured."}
+        
+        # Configure the client as shown in the new documentation
         genai.configure(api_key=API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-flash')
 
         # --- 2. Get the menu data (same as before) ---
         if not self.data_loaded:
@@ -186,9 +186,19 @@ class MealFinder:
         Example: ["Grilled Chicken Breast", "Steamed Broccoli", "Brown Rice"]
         """
 
-        # --- 5. Call the API and get the response ---
+        # --- 5. Call the API using the new Client method ---
         try:
-            response = model.generate_content(prompt)
+            # Use the new genai.Client() method from the quickstart
+            client = genai.Client()
+            
+            # Use the model name from the quickstart
+            model_name = "gemini-2.5-flash"
+            
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            
             # Clean up the response text (it sometimes adds ```json ... ```)
             clean_response = response.text.strip().replace("```json", "").replace("```", "")
             
@@ -213,12 +223,13 @@ class MealFinder:
                 return {"error": "AI could not find a valid combination."}
 
             # --- 7. Return the final meal plan ---
-            totals_map['calories'] = (totals_map['p'] * 4) + (totals_map['c'] * 4) + (totals_map['f'] * 9)
+            totals_map['calories'] = (totals_map['p'] * 4) + (totals_map['c'] * 4) + (totals_map['f']* 9)
             
             return {"plan": suggestion, "totals": totals_map, "court": court_name, "meal_name": meal_name}
 
         except Exception as e:
             print(f"Gemini API Error: {e}")
+            # This will now print the *actual* error to your Render logs
             return {"error": "The AI suggestion failed. Try again."}
 
     def find_best_meal(self, targets, meal_periods_to_check, exclusion_list=[], dietary_filters={}):
