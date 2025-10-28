@@ -5,6 +5,7 @@ import re
 import random
 import math
 import os
+import time # Import the time module for retries
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from google import genai
@@ -35,7 +36,6 @@ class MealFinder:
         self.todays_date = datetime.now().strftime('%Y-%m-%d')
         self.cache_file = f"menu_cache_{self.todays_date}.json"
         
-        # --- NEW AI CACHE FILE ---
         self.ai_cache_file = f"ai_cache_{self.todays_date}.json"
         
         self.master_item_list = []
@@ -180,7 +180,7 @@ class MealFinder:
         except Exception as e:
             print(f"AI Pre-loader: Error saving AI cache to disk: {e}")
 
-    def _fetch_ai_suggestion_from_api(self, court_name, meal_name):
+    def _fetch_ai_suggestion_from_api(self, court_name, meal_name, is_retry=False):
         """This is the core logic that calls the Gemini API."""
         API_KEY = os.environ.get("GEMINI_API_KEY")
         if not API_KEY: return {"error": "AI service is not configured."}
@@ -218,7 +218,24 @@ class MealFinder:
             if not suggestion: return {"error": "AI could not find a valid combination."}
             totals_map['calories'] = (totals_map['p'] * 4) + (totals_map['c'] * 4) + (totals_map['f']* 9)
             return {"plan": suggestion, "totals": totals_map, "court": court_name, "meal_name": meal_name}
+        
         except Exception as e:
+            # --- NEW RETRY LOGIC ---
+            # Check if it's a 429 error and we haven't already retried
+            if "429 RESOURCE_EXHAUSTED" in str(e) and not is_retry:
+                print(f"Gemini API Error for {court_name}/{meal_name}: 429 Rate Limit.")
+                # Try to parse the retry delay from the error string
+                retry_match = re.search(r"retryDelay': '(\d+)", str(e))
+                delay = 15 # Default delay
+                if retry_match:
+                    delay = int(retry_match.group(1)) + 1 # Add 1 second buffer
+                
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+                # Retry the request, marking it as a retry
+                return self._fetch_ai_suggestion_from_api(court_name, meal_name, is_retry=True) 
+            
+            # If it's not a 429, or the retry failed, return the error
             print(f"Gemini API Error for {court_name}/{meal_name}: {e}")
             return {"error": "The AI suggestion failed. Try again."}
 
@@ -294,7 +311,8 @@ class MealFinder:
                     self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
 
         # 7. Run all MISSING jobs in a ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        # --- FIX: Reduced max_workers from 10 to 4 to respect free tier rate limit ---
+        with ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(_preload_worker, missing_jobs)
         
         # 8. Save the newly populated cache back to disk
@@ -347,10 +365,7 @@ class MealFinder:
             if len(neighbor) > 1 and random.random() < 0.7:
                 neighbor[random.randrange(len(neighbor))] = random.choice(available_items)
             
-            # --- THIS IS THE FIX ---
             elif len(neighbor) < 5 and random.random() < 0.5:
-            # --- END OF FIX ---
-            
                 if len(available_items) > len(neighbor): neighbor.append(random.choice([i for i in available_items if i not in neighbor]))
             elif len(neighbor) > 2:
                 neighbor.pop(random.randrange(len(neighbor)))
