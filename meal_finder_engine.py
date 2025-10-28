@@ -491,10 +491,13 @@ class MealFinder:
                 filtered_master_list.append(item)
         
         # 2. Get a set of all unique, available courts from the filtered list
-        available_ courts = set(
+        
+        # --- SYNTAX FIX: Removed space from variable name ---
+        available_courts = set(
             item['court'] for item in filtered_master_list 
             if item['name'] not in exclusion_list and item['meal_name'] in meal_periods_to_check
         )
+        # --- END SYNTAX FIX ---
 
         if not available_courts:
             return None
