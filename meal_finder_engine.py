@@ -32,14 +32,16 @@ class MealFinder:
         }
         """
         self.dining_courts = ["Wiley", "Earhart", "Windsor", "Ford", "Hillenbrand"]
-        # Define common meal periods to pre-load
-        self.common_meal_periods = ['Breakfast', 'Lunch', 'Dinner'] 
+        # self.common_meal_periods = ['Breakfast', 'Lunch', 'Dinner'] # <- We are removing this
         self.todays_date = datetime.now().strftime('%Y-%m-%d')
         self.cache_file = f"menu_cache_{self.todays_date}.json"
         self.master_item_list = []
         self.data_loaded = False
         # Add a cache for AI suggestions
         self.ai_suggestions_cache = {}
+        # Add a lock for thread-safe cache writes
+        self.cache_lock = threading.Lock()
+
 
     def _get_numeric_value(self, label_str):
         """Extracts a number from a string label (e.g., '15g' -> 15.0)."""
@@ -86,7 +88,9 @@ class MealFinder:
         """
         Loads menu data for all dining courts, using multithreading for speed.
         Manages a daily cache to avoid excessive API calls.
+        This is now run in a background thread.
         """
+        print("Background thread: Starting menu data load...")
         cached_data, needs_to_save_cache = {}, False
         if os.path.exists(self.cache_file):
             with open(self.cache_file, 'r') as f:
@@ -127,10 +131,13 @@ class MealFinder:
 
         if needs_to_save_cache:
             with open(self.cache_file, 'w') as f: json.dump({"timestamp": datetime.now().isoformat(), "data": cached_data}, f)
-        self.data_loaded = True
+        
+        # This is the crucial flag that unlocks the API
+        self.data_loaded = True 
+        print("Background thread: Menu data load complete. 🥞")
 
     def get_top_protein_foods(self, count=25):
-        if not self.data_loaded: return []
+        # The data_loaded check is now handled in app.py
         unique_foods = { (item['name'], item['p'], item['c'], item['f']): item for item in self.master_item_list }
         protein_dense_foods = []
         for food in unique_foods.values():
@@ -160,6 +167,7 @@ class MealFinder:
         ]
         
         if not available_items:
+            # This is a valid state (e.g., no breakfast at Ford)
             return {"error": "No items found for this dining court and meal."}
         
         # --- 3. Format the data for the AI ---
@@ -227,8 +235,7 @@ class MealFinder:
         Public method to get an AI suggestion.
         It checks the cache first. If not found, it generates, caches, and returns.
         """
-        if not self.data_loaded:
-            return {"error": "Menu data is not loaded yet."}
+        # The data_loaded check is now handled in app.py
             
         cache_key = (court_name, meal_name)
         
@@ -237,12 +244,15 @@ class MealFinder:
             # print(f"Cache HIT for AI suggestion: {court_name}/{meal_name}")
             return self.ai_suggestions_cache[cache_key]
         
-        # 2. If not in cache, generate on-demand
+        # 2. If not in cache, the pre-loader must have missed it or is still running.
+        # We will generate it "on-demand" to serve the user now.
+        
         print(f"Cache MISS for AI suggestion: {court_name}/{meal_name}. Generating on-demand...")
         suggestion = self._fetch_ai_suggestion_from_api(court_name, meal_name)
         
-        # 3. Store in cache
-        self.ai_suggestions_cache[cache_key] = suggestion
+        # 3. Store in cache (thread-safe)
+        with self.cache_lock:
+            self.ai_suggestions_cache[cache_key] = suggestion
         
         return suggestion
 
@@ -250,69 +260,79 @@ class MealFinder:
     def _background_preloader_task(self):
         """
         The target function for the background thread.
-        It uses a ThreadPoolExecutor to populate the cache in parallel.
+        It dynamically finds ALL meal combos and populates the cache in parallel.
         """
+        # 1. Wait for the menu data to be loaded by the *other* thread
         if not self.data_loaded:
-            print("Pre-loader waiting for data to be loaded...")
+            print("AI Pre-loader: Waiting for menu data to be loaded...")
             while not self.data_loaded:
                 threading.Event().wait(1) # Wait 1 second
         
-        print("Starting AI suggestion pre-loading...")
+        print("AI Pre-loader: Menu data loaded. Starting AI suggestion pre-loading...")
         
-        # --- NEW PARALLEL LOGIC ---
+        # --- NEW DYNAMIC LOGIC ---
 
-        # 1. Create a list of all (court, meal) jobs to run
-        jobs = []
-        for court in self.dining_courts:
-            for meal in self.common_meal_periods:
-                cache_key = (court, meal)
-                if cache_key not in self.ai_suggestions_cache:
-                    jobs.append((court, meal))
+        # 2. Create a set of all unique (court, meal) jobs to run
+        # We use a set to automatically handle duplicates
+        jobs_set = set()
+        for item in self.master_item_list:
+            jobs_set.add((item['court'], item['meal_name']))
+        
+        jobs = list(jobs_set)
 
         if not jobs:
-            print("AI suggestion cache is already warm. No pre-loading needed.")
+            print("AI Pre-loader: No meals found in master list. No AI suggestions to pre-load.")
             return
 
-        print(f"Starting parallel pre-load of {len(jobs)} AI suggestions...")
+        print(f"AI Pre-loader: Found {len(jobs)} unique court/meal combinations to pre-load.")
+        
+        # 3. Initialize cache with "loading" status
+        # This gives a temporary response if a user requests *during* pre-loading
+        with self.cache_lock:
+            for court, meal in jobs:
+                self.ai_suggestions_cache[(court, meal)] = {"status": "loading"}
 
-        # 2. Define a worker function for the thread pool
+        # 4. Define a worker function for the thread pool
         def _preload_worker(job):
             court, meal = job
             cache_key = (court, meal)
-            # You can uncomment this for more verbose logging:
-            # print(f"Pre-loading AI suggestion for: {court} / {meal}")
             try:
                 suggestion = self._fetch_ai_suggestion_from_api(court, meal)
-                self.ai_suggestions_cache[cache_key] = suggestion
-                # print(f"Finished pre-loading: {court} / {meal}")
+                with self.cache_lock: # Write to cache thread-safely
+                    self.ai_suggestions_cache[cache_key] = suggestion
             except Exception as e:
                 print(f"Error pre-loading {court}/{meal}: {e}")
-                self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
+                with self.cache_lock:
+                    self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
 
-        # 3. Run all jobs in a ThreadPoolExecutor
-        # We use a pool of 10 workers to run up to 10 API calls concurrently.
+        # 5. Run all jobs in a ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=10) as executor:
             executor.map(_preload_worker, jobs)
         
-        print("AI suggestion pre-loading finished. 🎉")
+        print("AI Pre-loader: All suggestions pre-loaded. Cache is warm. 🎉")
         # --- END NEW LOGIC ---
 
 
-    def start_ai_suggestion_preloader(self):
+    def start_background_loaders(self):
         """
-        Starts the background thread to pre-load AI suggestions.
-        This method is called from app.py.
+        Starts background threads for BOTH menu loading and AI pre-loading.
+        This is called from app.py to allow Flask to start immediately.
         """
-        print("Initializing AI suggestion pre-loader thread...")
-        # daemon=True ensures the thread exits when the main app exits
-        loader_thread = threading.Thread(target=self._background_preloader_task, daemon=True)
-        loader_thread.start()
+        print("Initializing background loaders...")
+        
+        # Thread 1: Load menus from Purdue API
+        # daemon=True ensures these threads exit when the main app exits
+        menu_loader_thread = threading.Thread(target=self._load_all_menu_data, daemon=True)
+        menu_loader_thread.start()
+        
+        # Thread 2: Load AI suggestions (will wait for thread 1 to finish)
+        ai_loader_thread = threading.Thread(target=self._background_preloader_task, daemon=True)
+        ai_loader_thread.start()
 
     # --- END AI SUGGESTION REFACTOR ---
 
     def find_best_meal(self, targets, meal_periods_to_check, exclusion_list=[], dietary_filters={}):
-        if not self.data_loaded:
-            self._load_all_menu_data()
+        # The data_loaded check is now handled in app.py
         
         filtered_master_list = []
         for item in self.master_item_list:
