@@ -88,6 +88,15 @@ def api_find_meal():
             exclusion_list,
             dietary_filters
         )
+        
+        # --- THIS IS THE FIX ---
+        # If the algorithm returns None, it means no meal was found.
+        if result is None:
+            # Send a 404 "Not Found" with a JSON error message.
+            # This is valid JSON and will not crash the frontend.
+            return jsonify({"error": "No meal plan found. Try adjusting your filters."}), 404
+        # --- END OF FIX ---
+
         return jsonify(result)
         
     except Exception as e:
