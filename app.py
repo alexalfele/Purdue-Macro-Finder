@@ -30,6 +30,11 @@ print("Loading all menu data on startup. This may take a moment...")
 meal_finder_engine._load_all_menu_data() # Load data once on start
 print("Data loaded. Server is ready. 🚀")
 
+# --- ADD THIS LINE ---
+# Start the background thread to pre-load AI suggestions
+meal_finder_engine.start_ai_suggestion_preloader()
+# ---------------------
+
 # --- 4. CREATE THE API ENDPOINT FOR FINDING MEALS ---
 # This function will be called by your JavaScript frontend
 @app.route("/api/find_meal", methods=["POST"])
@@ -78,6 +83,7 @@ def api_suggest_meal():
         if not court or not meal:
             return jsonify({"error": "Court and meal period are required."}), 400
             
+        # This function now uses the cache!
         suggestion = meal_finder_engine.get_ai_suggestion(court, meal)
         return jsonify(suggestion)
         
