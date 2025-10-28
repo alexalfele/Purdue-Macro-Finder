@@ -245,7 +245,11 @@ class MealFinder:
         try:
             client = genai.Client(api_key=API_KEY)
             model_name = "gemini-1.5-flash" # More modern model
-            response = client.generate_content(model=f"models/{model_name}", contents=prompt)
+            
+            # --- API CALL FIX ---
+            # Changed client.generate_content to client.models.generate_content
+            response = client.models.generate_content(model=f"models/{model_name}", contents=prompt)
+            # --- END API CALL FIX ---
             
             # --- NEW PARSING LOGIC ---
             clean_response = response.text.strip().replace("```json", "").replace("```", "")
@@ -487,7 +491,7 @@ class MealFinder:
                 filtered_master_list.append(item)
         
         # 2. Get a set of all unique, available courts from the filtered list
-        available_courts = set(
+        available_ courts = set(
             item['court'] for item in filtered_master_list 
             if item['name'] not in exclusion_list and item['meal_name'] in meal_periods_to_check
         )
