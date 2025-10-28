@@ -6,7 +6,7 @@ from meal_finder_engine import MealFinder
 import threading
 
 # --- 1. SETUP THE FLASK APP ---
-# Serve files from a 'static' folder
+# Serve files from the 'static' folder
 app = Flask(__name__, static_folder='static')
 CORS(app) 
 
@@ -74,9 +74,13 @@ def api_find_meal():
     try:
         data = request.json
         targets = data.get('targets', {})
-        meal_periods = data.get('meal_periods', ['Lunch'])
-        exclusion_list = data.get('exclusion_list', [])
+        meal_periods = data.get('meal_periods', []) # Use list from request
         dietary_filters = data.get('dietary_filters', {})
+        exclusion_list = data.get('exclusion_list', [])
+
+        # Add a check for empty meal_periods
+        if not meal_periods:
+            return jsonify({"error": "Please select at least one meal period."}), 400
 
         result = engine.find_best_meal(
             targets,
