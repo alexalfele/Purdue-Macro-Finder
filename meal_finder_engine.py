@@ -250,7 +250,7 @@ class MealFinder:
     def _background_preloader_task(self):
         """
         The target function for the background thread.
-        It loops through all court/meal combos and populates the cache.
+        It uses a ThreadPoolExecutor to populate the cache in parallel.
         """
         if not self.data_loaded:
             print("Pre-loader waiting for data to be loaded...")
@@ -258,19 +258,44 @@ class MealFinder:
                 threading.Event().wait(1) # Wait 1 second
         
         print("Starting AI suggestion pre-loading...")
+        
+        # --- NEW PARALLEL LOGIC ---
+
+        # 1. Create a list of all (court, meal) jobs to run
+        jobs = []
         for court in self.dining_courts:
             for meal in self.common_meal_periods:
                 cache_key = (court, meal)
                 if cache_key not in self.ai_suggestions_cache:
-                    print(f"Pre-loading AI suggestion for: {court} / {meal}")
-                    try:
-                        suggestion = self._fetch_ai_suggestion_from_api(court, meal)
-                        self.ai_suggestions_cache[cache_key] = suggestion
-                    except Exception as e:
-                        print(f"Error pre-loading {court}/{meal}: {e}")
-                        self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
+                    jobs.append((court, meal))
+
+        if not jobs:
+            print("AI suggestion cache is already warm. No pre-loading needed.")
+            return
+
+        print(f"Starting parallel pre-load of {len(jobs)} AI suggestions...")
+
+        # 2. Define a worker function for the thread pool
+        def _preload_worker(job):
+            court, meal = job
+            cache_key = (court, meal)
+            # You can uncomment this for more verbose logging:
+            # print(f"Pre-loading AI suggestion for: {court} / {meal}")
+            try:
+                suggestion = self._fetch_ai_suggestion_from_api(court, meal)
+                self.ai_suggestions_cache[cache_key] = suggestion
+                # print(f"Finished pre-loading: {court} / {meal}")
+            except Exception as e:
+                print(f"Error pre-loading {court}/{meal}: {e}")
+                self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
+
+        # 3. Run all jobs in a ThreadPoolExecutor
+        # We use a pool of 10 workers to run up to 10 API calls concurrently.
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(_preload_worker, jobs)
         
         print("AI suggestion pre-loading finished. 🎉")
+        # --- END NEW LOGIC ---
 
 
     def start_ai_suggestion_preloader(self):
