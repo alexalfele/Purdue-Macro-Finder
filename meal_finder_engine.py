@@ -32,14 +32,15 @@ class MealFinder:
         }
         """
         self.dining_courts = ["Wiley", "Earhart", "Windsor", "Ford", "Hillenbrand"]
-        # self.common_meal_periods = ['Breakfast', 'Lunch', 'Dinner'] # <- We are removing this
         self.todays_date = datetime.now().strftime('%Y-%m-%d')
         self.cache_file = f"menu_cache_{self.todays_date}.json"
+        
+        # --- NEW AI CACHE FILE ---
+        self.ai_cache_file = f"ai_cache_{self.todays_date}.json"
+        
         self.master_item_list = []
         self.data_loaded = False
-        # Add a cache for AI suggestions
         self.ai_suggestions_cache = {}
-        # Add a lock for thread-safe cache writes
         self.cache_lock = threading.Lock()
 
 
@@ -94,7 +95,9 @@ class MealFinder:
         cached_data, needs_to_save_cache = {}, False
         if os.path.exists(self.cache_file):
             with open(self.cache_file, 'r') as f:
-                try: cached_data = json.load(f).get("data", {})
+                try: 
+                    cached_data = json.load(f).get("data", {})
+                    print(f"Background thread: Found and loaded {self.cache_file} from disk.")
                 except json.JSONDecodeError: pass
 
         with ThreadPoolExecutor() as executor:
@@ -148,66 +151,62 @@ class MealFinder:
         protein_dense_foods.sort(key=lambda x: x['protein_density'], reverse=True)
         return protein_dense_foods[:count]
 
-    # --- AI SUGGESTION REFACTOR ---
+    # --- AI SUGGESTION CACHING ---
+
+    def _load_ai_cache_from_disk(self):
+        """Loads the AI suggestion cache from a JSON file."""
+        if os.path.exists(self.ai_cache_file):
+            print(f"AI Pre-loader: Found and loading {self.ai_cache_file} from disk.")
+            try:
+                with open(self.ai_cache_file, 'r') as f:
+                    # JSON stores tuples as lists, so we convert keys back
+                    data_from_disk = json.load(f)
+                    with self.cache_lock:
+                        self.ai_suggestions_cache = {tuple(k): v for k, v in data_from_disk.items()}
+                        print(f"AI Pre-loader: Loaded {len(self.ai_suggestions_cache)} suggestions from disk.")
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"AI Pre-loader: Failed to read AI cache file. Will regenerate. Error: {e}")
+                self.ai_suggestions_cache = {}
+
+    def _save_ai_cache_to_disk(self):
+        """Saves the current AI suggestion cache to a JSON file."""
+        with self.cache_lock:
+            # We must convert tuple keys to lists for JSON serialization
+            data_to_save = {list(k): v for k, v in self.ai_suggestions_cache.items()}
+        try:
+            with open(self.ai_cache_file, 'w') as f:
+                json.dump(data_to_save, f)
+            # print(f"AI Pre-loader: Saved {len(data_to_save)} suggestions to {self.ai_cache_file}.")
+        except Exception as e:
+            print(f"AI Pre-loader: Error saving AI cache to disk: {e}")
 
     def _fetch_ai_suggestion_from_api(self, court_name, meal_name):
-        """
-        This is the core logic that calls the Gemini API.
-        It's now a private method called by the cache wrapper or the preloader.
-        """
-        # --- 1. Configure the API ---
+        """This is the core logic that calls the Gemini API."""
         API_KEY = os.environ.get("GEMINI_API_KEY")
-        if not API_KEY:
-            return {"error": "AI service is not configured."}
+        if not API_KEY: return {"error": "AI service is not configured."}
         
-        # --- 2. Get the menu data ---
-        available_items = [
-            item for item in self.master_item_list 
-            if item['court'] == court_name and item['meal_name'] == meal_name
-        ]
+        available_items = [item for item in self.master_item_list if item['court'] == court_name and item['meal_name'] == meal_name]
+        if not available_items: return {"error": "No items found for this dining court and meal."}
         
-        if not available_items:
-            # This is a valid state (e.g., no breakfast at Ford)
-            return {"error": "No items found for this dining court and meal."}
-        
-        # --- 3. Format the data for the AI ---
-        food_list_str = "\n".join([
-            f"- {item['name']} (P:{item['p']}g, C:{item['c']}g, F:{item['f']}g)" 
-            for item in available_items
-        ])
-
-        # --- 4. Create the prompt ---
+        food_list_str = "\n".join([f"- {item['name']} (P:{item['p']}g, C:{item['c']}g, F:{item['f']}g)" for item in available_items])
         prompt = f"""
         You are a Purdue University dining hall nutritionist. 
         Your goal is to help a student pick a balanced, healthy, and protein rich meal.
-        
         Here is the full list of available foods:
         {food_list_str}
-        
         From that list, please select 3-5 items that make a healthy, balanced meal. 
         Prioritize a lean protein, a vegetable or fruit, and a whole-grain carb.
-        
         Return your answer as ONLY a valid JSON list of the exact food names. Do not add any other text.
         Example: ["Grilled Chicken Breast", "Steamed Broccoli", "Brown Rice"]
         """
-
-        # --- 5. Call the API ---
         try:
             client = genai.Client(api_key=API_KEY)
             model_name = "gemini-2.5-flash"
-            
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            
+            response = client.models.generate_content(model=model_name, contents=prompt)
             clean_response = response.text.strip().replace("```json", "").replace("```", "")
             suggested_names = json.loads(clean_response)
-
-            # --- 6. Find the full items for those names ---
             suggestion = []
             totals_map = {'p': 0, 'c': 0, 'f': 0}
-            
             for name in suggested_names:
                 for item in available_items:
                     if item['name'] == name:
@@ -216,101 +215,91 @@ class MealFinder:
                         totals_map['c'] += item['c']
                         totals_map['f'] += item['f']
                         break
-            
-            if not suggestion:
-                return {"error": "AI could not find a valid combination."}
-
-            # --- 7. Return the final meal plan ---
+            if not suggestion: return {"error": "AI could not find a valid combination."}
             totals_map['calories'] = (totals_map['p'] * 4) + (totals_map['c'] * 4) + (totals_map['f']* 9)
-            
             return {"plan": suggestion, "totals": totals_map, "court": court_name, "meal_name": meal_name}
-
         except Exception as e:
             print(f"Gemini API Error for {court_name}/{meal_name}: {e}")
             return {"error": "The AI suggestion failed. Try again."}
 
 
     def get_ai_suggestion(self, court_name, meal_name):
-        """
-        Public method to get an AI suggestion.
-        It checks the cache first. If not found, it generates, caches, and returns.
-        """
-        # The data_loaded check is now handled in app.py
-            
+        """Public method to get an AI suggestion. Checks cache, then generates on-demand."""
         cache_key = (court_name, meal_name)
         
-        # 1. Check cache
         if cache_key in self.ai_suggestions_cache:
-            # print(f"Cache HIT for AI suggestion: {court_name}/{meal_name}")
             return self.ai_suggestions_cache[cache_key]
-        
-        # 2. If not in cache, the pre-loader must have missed it or is still running.
-        # We will generate it "on-demand" to serve the user now.
         
         print(f"Cache MISS for AI suggestion: {court_name}/{meal_name}. Generating on-demand...")
         suggestion = self._fetch_ai_suggestion_from_api(court_name, meal_name)
         
-        # 3. Store in cache (thread-safe)
         with self.cache_lock:
             self.ai_suggestions_cache[cache_key] = suggestion
+        
+        # Save the newly generated item to disk for the next restart
+        self._save_ai_cache_to_disk() 
         
         return suggestion
 
 
     def _background_preloader_task(self):
         """
-        The target function for the background thread.
-        It dynamically finds ALL meal combos and populates the cache in parallel.
+        Loads AI cache from disk, then finds and generates any missing suggestions in parallel.
         """
-        # 1. Wait for the menu data to be loaded by the *other* thread
+        # 1. Wait for the menu data to be loaded
         if not self.data_loaded:
             print("AI Pre-loader: Waiting for menu data to be loaded...")
             while not self.data_loaded:
-                threading.Event().wait(1) # Wait 1 second
+                threading.Event().wait(1)
         
-        print("AI Pre-loader: Menu data loaded. Starting AI suggestion pre-loading...")
+        print("AI Pre-loader: Menu data loaded. Checking AI cache...")
         
-        # --- NEW DYNAMIC LOGIC ---
+        # 2. Load existing AI suggestions from disk
+        self._load_ai_cache_from_disk()
 
-        # 2. Create a set of all unique (court, meal) jobs to run
-        # We use a set to automatically handle duplicates
+        # 3. Create a set of all unique (court, meal) jobs that *should* exist
         jobs_set = set()
         for item in self.master_item_list:
             jobs_set.add((item['court'], item['meal_name']))
         
-        jobs = list(jobs_set)
-
-        if not jobs:
-            print("AI Pre-loader: No meals found in master list. No AI suggestions to pre-load.")
-            return
-
-        print(f"AI Pre-loader: Found {len(jobs)} unique court/meal combinations to pre-load.")
-        
-        # 3. Initialize cache with "loading" status
-        # This gives a temporary response if a user requests *during* pre-loading
+        # 4. Find which jobs are MISSING from the cache
+        missing_jobs = []
         with self.cache_lock:
-            for court, meal in jobs:
+            for job in jobs_set:
+                if job not in self.ai_suggestions_cache:
+                    missing_jobs.append(job)
+
+        if not missing_jobs:
+            print(f"AI Pre-loader: Cache is warm. All {len(jobs_set)} suggestions are already loaded. 🎉")
+            return
+        
+        print(f"AI Pre-loader: Found {len(jobs_set)} total combinations. {len(missing_jobs)} are missing. Starting parallel pre-load...")
+        
+        # 5. Initialize cache with "loading" status for missing jobs
+        with self.cache_lock:
+            for court, meal in missing_jobs:
                 self.ai_suggestions_cache[(court, meal)] = {"status": "loading"}
 
-        # 4. Define a worker function for the thread pool
+        # 6. Define a worker function for the thread pool
         def _preload_worker(job):
             court, meal = job
             cache_key = (court, meal)
             try:
                 suggestion = self._fetch_ai_suggestion_from_api(court, meal)
-                with self.cache_lock: # Write to cache thread-safely
+                with self.cache_lock:
                     self.ai_suggestions_cache[cache_key] = suggestion
             except Exception as e:
                 print(f"Error pre-loading {court}/{meal}: {e}")
                 with self.cache_lock:
                     self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
 
-        # 5. Run all jobs in a ThreadPoolExecutor
+        # 7. Run all MISSING jobs in a ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=10) as executor:
-            executor.map(_preload_worker, jobs)
+            executor.map(_preload_worker, missing_jobs)
         
-        print("AI Pre-loader: All suggestions pre-loaded. Cache is warm. 🎉")
-        # --- END NEW LOGIC ---
+        # 8. Save the newly populated cache back to disk
+        self._save_ai_cache_to_disk()
+        print(f"AI Pre-loader: {len(missing_jobs)} new suggestions generated and saved. Cache is warm. 🎉")
 
 
     def start_background_loaders(self):
@@ -320,16 +309,15 @@ class MealFinder:
         """
         print("Initializing background loaders...")
         
-        # Thread 1: Load menus from Purdue API
-        # daemon=True ensures these threads exit when the main app exits
+        # Thread 1: Load menus from Purdue API (or disk cache)
         menu_loader_thread = threading.Thread(target=self._load_all_menu_data, daemon=True)
         menu_loader_thread.start()
         
-        # Thread 2: Load AI suggestions (will wait for thread 1 to finish)
+        # Thread 2: Load AI suggestions (or disk cache)
         ai_loader_thread = threading.Thread(target=self._background_preloader_task, daemon=True)
         ai_loader_thread.start()
 
-    # --- END AI SUGGESTION REFACTOR ---
+    # --- END AI SUGGESTION CACHING ---
 
     def find_best_meal(self, targets, meal_periods_to_check, exclusion_list=[], dietary_filters={}):
         # The data_loaded check is now handled in app.py
@@ -358,7 +346,7 @@ class MealFinder:
             neighbor = list(current_solution)
             if len(neighbor) > 1 and random.random() < 0.7:
                 neighbor[random.randrange(len(neighbor))] = random.choice(available_items)
-            elif len(neighbor) < 5 and random.random() < 0.5:
+            elif len(neighbor) < 5 and.random() < 0.5:
                 if len(available_items) > len(neighbor): neighbor.append(random.choice([i for i in available_items if i not in neighbor]))
             elif len(neighbor) > 2:
                 neighbor.pop(random.randrange(len(neighbor)))
