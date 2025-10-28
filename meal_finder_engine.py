@@ -346,7 +346,11 @@ class MealFinder:
             neighbor = list(current_solution)
             if len(neighbor) > 1 and random.random() < 0.7:
                 neighbor[random.randrange(len(neighbor))] = random.choice(available_items)
-            elif len(neighbor) < 5 and.random() < 0.5:
+            
+            # --- THIS IS THE FIX ---
+            elif len(neighbor) < 5 and random.random() < 0.5:
+            # --- END OF FIX ---
+            
                 if len(available_items) > len(neighbor): neighbor.append(random.choice([i for i in available_items if i not in neighbor]))
             elif len(neighbor) > 2:
                 neighbor.pop(random.randrange(len(neighbor)))
