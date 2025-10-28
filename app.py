@@ -4,6 +4,8 @@ from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from meal_finder_engine import MealFinder
 import threading
+import time # Import time for rate limit
+import re # Import re for rate limit
 
 # --- 1. SETUP THE FLASK APP ---
 # Serve files from the 'static' folder
@@ -50,17 +52,15 @@ def get_engine():
         
         return meal_finder_engine
 
-# --- 3. NEW: ROUTE TO SERVE THE FRONTEND ---
+# --- 3. ROUTE TO SERVE THE FRONTEND ---
 @app.route("/")
 def serve_index():
     """Serves the index.html file from the static folder."""
-    # This will send static/index.html
     return send_from_directory(app.static_folder, 'index.html')
 
 @app.route("/<path:path>")
 def serve_static_files(path):
     """Serves other static files (like css, js) from the static folder."""
-    # This will send static/style.css, static/script.js, etc.
     return send_from_directory(app.static_folder, path)
 
 
@@ -78,7 +78,6 @@ def api_find_meal():
         dietary_filters = data.get('dietary_filters', {})
         exclusion_list = data.get('exclusion_list', [])
 
-        # Add a check for empty meal_periods
         if not meal_periods:
             return jsonify({"error": "Please select at least one meal period."}), 400
 
@@ -89,11 +88,8 @@ def api_find_meal():
             dietary_filters
         )
         
-        # --- THIS IS THE FIX ---
-        # If the algorithm returns None, it means no meal was found.
+        # --- FIX for "Unexpected end of JSON input" ---
         if result is None:
-            # Send a 404 "Not Found" with a JSON error message.
-            # This is valid JSON and will not crash the frontend.
             return jsonify({"error": "No meal plan found. Try adjusting your filters."}), 404
         # --- END OF FIX ---
 
