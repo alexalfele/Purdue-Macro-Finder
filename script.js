@@ -1,9 +1,10 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // --- 1. GET REFERENCES TO HTML ELEMENTS ---
-    
-    // API URL - *** THIS IS THE FIX ***
-    // Point to your live Render backend URL
+    // --- 1. CONFIGURATION ---
     const API_BASE_URL = "https://purdue-macro-finder.onrender.com";
+    const RETRY_DELAY = 5000; // 5 seconds
+    const MAX_RETRIES = 3;
+    
+    // --- 2. GET REFERENCES TO HTML ELEMENTS ---
     
     // Tabs
     const tabButtons = document.querySelectorAll('.tab-button');
@@ -41,12 +42,64 @@ document.addEventListener('DOMContentLoaded', () => {
     const chartCanvas = document.getElementById('macro-chart').getContext('2d');
     const mealPlanItems = document.getElementById('meal-plan-items');
     
-    // --- 2. GLOBAL STATE VARIABLES ---
-    let activeTab = 'ai'; // 'ai' or 'manual'
+    // --- 3. GLOBAL STATE VARIABLES ---
+    let activeTab = 'ai';
     let macroChart = null;
-    let currentRetryTimeout = null; // For 503 errors
+    let currentRetryTimeout = null;
+    let retryCount = 0;
 
-    // --- 3. EVENT LISTENERS ---
+    // --- 4. UTILITY FUNCTIONS ---
+    
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    function validateMacroInput(value, macroName) {
+        const num = parseInt(value) || 0;
+        if (num < 0) {
+            return { valid: false, message: `${macroName} cannot be negative` };
+        }
+        if (num > 500) {
+            return { valid: false, message: `${macroName} seems unreasonably high` };
+        }
+        return { valid: true };
+    }
+
+    // --- 5. INPUT VALIDATION ---
+    
+    const validateInputs = debounce(() => {
+        if (activeTab === 'manual') {
+            const protein = parseInt(targetProtein.value) || 0;
+            const carbs = parseInt(targetCarbs.value) || 0;
+            const fat = parseInt(targetFat.value) || 0;
+            
+            // Check for warnings
+            if (protein > 100) {
+                statusLabel.textContent = '⚠️ High protein target';
+                statusLabel.style.color = '#fbbf24'; // yellow
+            } else if (protein === 0 && carbs === 0 && fat === 0) {
+                statusLabel.textContent = 'Set your macro targets';
+                statusLabel.style.color = '#a1a1aa'; // default
+            } else {
+                statusLabel.textContent = 'Ready to generate';
+                statusLabel.style.color = '#a1a1aa'; // default
+            }
+        }
+    }, 500);
+    
+    targetProtein.addEventListener('input', validateInputs);
+    targetCarbs.addEventListener('input', validateInputs);
+    targetFat.addEventListener('input', validateInputs);
+
+    // --- 6. EVENT LISTENERS ---
 
     // Tab switching
     tabButtons.forEach(button => {
@@ -56,10 +109,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Main "Generate" button (Critique #5)
+    // Main "Generate" button
     generateButton.addEventListener('click', () => {
         // Clear any pending retries
-        if (currentRetryTimeout) clearTimeout(currentRetryTimeout);
+        if (currentRetryTimeout) {
+            clearTimeout(currentRetryTimeout);
+            currentRetryTimeout = null;
+        }
+        retryCount = 0;
         
         if (activeTab === 'ai') {
             handleAiSuggestion();
@@ -72,15 +129,35 @@ document.addEventListener('DOMContentLoaded', () => {
     resetButton.addEventListener('click', () => {
         aiForm.reset();
         manualForm.reset();
+        
         // Re-check default meal periods
-        document.querySelectorAll('input[name="meal_period"]').forEach(cb => {
+        mealPeriodCheckboxes.forEach(cb => {
             cb.checked = (cb.value === 'Lunch' || cb.value === 'Dinner');
         });
+        
+        // Destroy chart if exists
+        if (macroChart) {
+            macroChart.destroy();
+            macroChart = null;
+        }
+        
         showPlaceholder('Select a tab and generate a meal.');
         statusLabel.textContent = 'Cleared. Ready to go!';
+        statusLabel.style.color = '#a1a1aa';
     });
 
-    // --- 4. CORE API FUNCTIONS ---
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !generateButton.disabled && 
+            document.activeElement.tagName !== 'INPUT') {
+            generateButton.click();
+        }
+        if (e.key === 'Escape') {
+            resetButton.click();
+        }
+    });
+
+    // --- 7. CORE API FUNCTIONS ---
 
     async function handleAiSuggestion() {
         const payload = {
@@ -88,18 +165,29 @@ document.addEventListener('DOMContentLoaded', () => {
             meal: aiMeal.value,
         };
         
-        // Show loading spinner (Critique #3)
         showLoadingState('Asking AI for a smart suggestion...');
         
         try {
             const result = await makeApiCall('/api/suggest_meal', payload);
-            displayResult(result, true); // true = is AI result
+            displayResult(result, true);
+            retryCount = 0;
         } catch (error) {
             handleApiError(error);
         }
     }
 
     async function handleManualSearch() {
+        // Validate inputs
+        const protein = parseInt(targetProtein.value) || 0;
+        const carbs = parseInt(targetCarbs.value) || 0;
+        const fat = parseInt(targetFat.value) || 0;
+        
+        const proteinValidation = validateMacroInput(protein, 'Protein');
+        if (!proteinValidation.valid) {
+            showPlaceholder(proteinValidation.message);
+            return;
+        }
+        
         // Get selected meal periods
         const selectedMeals = [];
         mealPeriodCheckboxes.forEach(cb => {
@@ -107,6 +195,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectedMeals.push(cb.value);
             }
         });
+        
+        if (selectedMeals.length === 0) {
+            showPlaceholder('Please select at least one meal period');
+            return;
+        }
 
         // Get dietary filters
         const selectedFilters = {};
@@ -117,54 +210,59 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         const payload = {
-            targets: {
-                p: parseInt(targetProtein.value) || 0,
-                c: parseInt(targetCarbs.value) || 0,
-                f: parseInt(targetFat.value) || 0,
-            },
+            targets: { p: protein, c: carbs, f: fat },
             meal_periods: selectedMeals,
             dietary_filters: selectedFilters,
-            exclusion_list: [] // You can add this feature later
+            exclusion_list: []
         };
         
-        // Show loading spinner
         showLoadingState('Calculating the best meal plan...');
 
         try {
             const result = await makeApiCall('/api/find_meal', payload);
-            displayResult(result, false); // false = not AI result
+            displayResult(result, false);
+            retryCount = 0;
         } catch (error) {
             handleApiError(error);
         }
     }
     
     async function makeApiCall(endpoint, payload) {
-        const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
+        try {
+            const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(30000) // 30 second timeout
+            });
 
-        const data = await response.json();
+            const data = await response.json();
 
-        if (!response.ok) {
-            // Check for our "still loading" error
-            if (response.status === 503) {
-                throw new Error('503:still_loading');
+            if (!response.ok) {
+                if (response.status === 503) {
+                    throw new Error('503:still_loading');
+                }
+                if (response.status === 429) {
+                    throw new Error('429:rate_limit');
+                }
+                throw new Error(data.error || `HTTP error! Status: ${response.status}`);
             }
-            // Use the error message from the JSON body
-            throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+            
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            
+            return data;
+            
+        } catch (error) {
+            if (error.name === 'TimeoutError') {
+                throw new Error('Request timed out. Please try again.');
+            }
+            throw error;
         }
-        
-        // This should not happen with our app.py fix, but good to keep
-        if (data.error) {
-            throw new Error(data.error);
-        }
-        
-        return data;
     }
 
-    // --- 5. UI/DOM HELPER FUNCTIONS ---
+    // --- 8. UI/DOM HELPER FUNCTIONS ---
 
     function setActiveTab(tabName) {
         tabButtons.forEach(btn => {
@@ -174,50 +272,71 @@ document.addEventListener('DOMContentLoaded', () => {
             content.classList.toggle('active', content.id === tabName);
         });
         statusLabel.textContent = `Switched to ${tabName.toUpperCase()} tab.`;
+        statusLabel.style.color = '#a1a1aa';
     }
 
     function showLoadingState(message) {
         generateButton.disabled = true;
-        generateButton.textContent = 'Finding...';
+        generateButton.innerHTML = '<span class="spinner-inline"></span> Finding...';
         statusLabel.textContent = message;
+        statusLabel.style.color = '#a1a1aa';
         
         resultsPlaceholder.classList.add('hidden');
         resultsContent.classList.add('hidden');
-        loadingSpinner.classList.remove('hidden'); // Show spinner
+        loadingSpinner.classList.remove('hidden');
     }
 
     function showPlaceholder(message) {
         statusLabel.textContent = message;
+        statusLabel.style.color = '#a1a1aa';
         resultsPlaceholder.classList.remove('hidden');
         resultsContent.classList.add('hidden');
         loadingSpinner.classList.add('hidden');
         generateButton.disabled = false;
-        generateButton.textContent = 'Generate My Meal Plan 🍽️';
+        generateButton.innerHTML = 'Generate My Meal Plan 🍽️';
     }
     
     function handleApiError(error) {
-        // Handle the 503 retry logic
-        if (error.message === '503:still_loading') {
-            statusLabel.textContent = 'Server is waking up. Retrying in 5s...';
-            // Try again after 5 seconds
-            currentRetryTimeout = setTimeout(() => {
-                generateButton.click(); // Re-click the button
-            }, 5000);
-            // Keep loading state active
+        // Handle rate limiting
+        if (error.message === '429:rate_limit') {
+            showPlaceholder('⚠️ Too many requests. Please wait a minute and try again.');
+            generateButton.disabled = true;
+            setTimeout(() => {
+                generateButton.disabled = false;
+            }, 60000); // Re-enable after 1 minute
             return;
         }
         
-        // Show a normal error
+        // Handle 503 retry logic
+        if (error.message === '503:still_loading') {
+            if (retryCount < MAX_RETRIES) {
+                retryCount++;
+                statusLabel.textContent = `Server is waking up... Retry ${retryCount}/${MAX_RETRIES} in 5s`;
+                statusLabel.style.color = '#fbbf24'; // yellow
+                
+                currentRetryTimeout = setTimeout(() => {
+                    generateButton.click();
+                }, RETRY_DELAY);
+                return;
+            } else {
+                showPlaceholder('Server is taking too long to respond. Please try again later.');
+                return;
+            }
+        }
+        
+        // Show normal error
         showPlaceholder(`Error: ${error.message}`);
-        statusLabel.textContent = `Error: ${error.message}`;
+        statusLabel.style.color = '#ef4444'; // red
     }
 
-    // This function builds the entire results panel (Critique #6)
     function displayResult(result, isAiResult) {
-        statusLabel.textContent = `Found a meal at ${result.court}!`;
+        statusLabel.textContent = `✅ Found a meal at ${result.court}!`;
+        statusLabel.style.color = '#22c55e'; // green
         
         // 1. Set Header
-        resultHeader.textContent = isAiResult ? `AI Suggestion for ${result.meal_name}` : `Your Meal Plan for ${result.meal_name}`;
+        resultHeader.textContent = isAiResult 
+            ? `AI Suggestion: ${result.meal_name}` 
+            : `Your Meal Plan: ${result.meal_name}`;
         
         // 2. Show/Hide AI Explanation Card
         if (isAiResult && result.explanation) {
@@ -228,13 +347,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         // 3. Update Chart
-        updateMacroChart(result.totals); // FIX: Pass the whole totals object
+        updateMacroChart(result.totals);
         
-        // 4. Build Item Cards (Critique #6)
-        mealPlanItems.innerHTML = ''; // Clear old items
+        // 4. Build Item Cards
+        mealPlanItems.innerHTML = '';
         result.plan.forEach(item => {
             const card = document.createElement('div');
             card.className = 'item-card';
+            
+            // Add animation
+            card.style.opacity = '0';
+            card.style.transform = 'translateY(10px)';
             
             card.innerHTML = `
                 <div class="item-info">
@@ -247,26 +370,39 @@ document.addEventListener('DOMContentLoaded', () => {
                     <span class="f">F: ${(item.f || 0).toFixed(0)}g</span>
                 </div>
             `;
+            
             mealPlanItems.appendChild(card);
+            
+            // Trigger animation
+            setTimeout(() => {
+                card.style.transition = 'all 0.3s ease';
+                card.style.opacity = '1';
+                card.style.transform = 'translateY(0)';
+            }, 50);
         });
 
-        // 5. Show the results
+        // 5. Show results
         resultsPlaceholder.classList.add('hidden');
         loadingSpinner.classList.add('hidden');
         resultsContent.classList.remove('hidden');
         
         generateButton.disabled = false;
-        generateButton.textContent = 'Generate My Meal Plan 🍽️';
+        generateButton.innerHTML = 'Generate My Meal Plan 🍽️';
     }
 
     function updateMacroChart(totals) {
-        // FIX: Destructure the properties from the totals object
         const { p = 0, c = 0, f = 0 } = totals;
         const calories = [p * 4, c * 4, f * 9];
-        const labels = [`Protein (${p.toFixed(0)}g)`, `Carbs (${c.toFixed(0)}g)`, `Fat (${f.toFixed(0)}g)`];
+        const labels = [
+            `Protein (${p.toFixed(0)}g)`, 
+            `Carbs (${c.toFixed(0)}g)`, 
+            `Fat (${f.toFixed(0)}g)`
+        ];
 
+        // Destroy existing chart
         if (macroChart) {
             macroChart.destroy();
+            macroChart = null;
         }
 
         macroChart = new Chart(chartCanvas, {
@@ -276,21 +412,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 datasets: [{
                     data: calories,
                     backgroundColor: ['#6ee7b7', '#7dd3fc', '#fde047'],
-                    borderColor: '#3f3f46', 
+                    borderColor: '#3f3f46',
                     borderWidth: 2
                 }]
             },
             options: {
                 responsive: true,
+                maintainAspectRatio: true,
                 plugins: {
-                    legend: { labels: { color: 'white', font: { size: 12 } } },
+                    legend: {
+                        labels: {
+                            color: 'white',
+                            font: { size: 12 }
+                        }
+                    },
                     tooltip: {
                         callbacks: {
                             label: (context) => {
                                 let value = context.parsed;
                                 let total = context.chart.getDatasetMeta(0).total;
                                 let percentage = ((value / total) * 100).toFixed(0);
-                                return `${context.label}: ${percentage}%`;
+                                return `${context.label}: ${percentage}% of calories`;
                             }
                         }
                     }
@@ -299,8 +441,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- 6. INITIALIZE ---
-    setActiveTab(activeTab); // Set the default tab on load
+    // --- 9. INITIALIZE ---
+    setActiveTab(activeTab);
     showPlaceholder('Select a tab and generate a meal.');
 
+    // Add accessibility attributes
+    generateButton.setAttribute('aria-label', 'Generate meal plan');
+    loadingSpinner.setAttribute('role', 'status');
+    loadingSpinner.setAttribute('aria-live', 'polite');
+
+    console.log('Purdue Macro Finder initialized successfully!');
 });
