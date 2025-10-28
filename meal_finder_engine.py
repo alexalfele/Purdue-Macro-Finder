@@ -57,9 +57,9 @@ class MealFinder:
         """
         if not meal_plan: return float('inf'), {}
         totals = {
-            'p': sum(item['p'] for item in meal_plan),
-            'c': sum(item['c'] for item in meal_plan),
-            'f': sum(item['f'] for item in meal_plan)
+            'p': sum(item.get('p', 0) for item in meal_plan),
+            'c': sum(item.get('c', 0) for item in meal_plan),
+            'f': sum(item.get('f', 0) for item in meal_plan)
         }
         errors = {
             'p': totals['p'] - targets['p'],
@@ -144,9 +144,9 @@ class MealFinder:
         unique_foods = { (item['name'], item['p'], item['c'], item['f']): item for item in self.master_item_list }
         protein_dense_foods = []
         for food in unique_foods.values():
-            calories = (food['p'] * 4) + (food['c'] * 4) + (food['f'] * 9)
-            if calories > 50 and food['p'] > 5:
-                protein_per_100kcal = (food['p'] / calories) * 100
+            calories = (food.get('p', 0) * 4) + (food.get('c', 0) * 4) + (food.get('f', 0) * 9)
+            if calories > 50 and food.get('p', 0) > 5:
+                protein_per_100kcal = (food.get('p', 0) / calories) * 100
                 protein_dense_foods.append({**food, "calories": calories, "protein_density": protein_per_100kcal})
         protein_dense_foods.sort(key=lambda x: x['protein_density'], reverse=True)
         return protein_dense_foods[:count]
