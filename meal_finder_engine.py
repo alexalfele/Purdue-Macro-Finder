@@ -189,22 +189,44 @@ class MealFinder:
         if not available_items: return {"error": "No items found for this dining court and meal."}
         
         food_list_str = "\n".join([f"- {item['name']} (P:{item['p']}g, C:{item['c']}g, F:{item['f']}g)" for item in available_items])
+        
+        # --- MODIFIED PROMPT ---
+        # Ask for a JSON object with 'foods' and 'explanation'
         prompt = f"""
         You are a Purdue University dining hall nutritionist. 
         Your goal is to help a student pick a balanced, healthy, and protein rich meal.
+        
         Here is the full list of available foods:
         {food_list_str}
-        From that list, please select 3-5 items that make a healthy, balanced meal. 
+        
+        Please select 3-5 items that make a healthy, balanced meal. 
         Prioritize a lean protein, a vegetable or fruit, and a whole-grain carb.
-        Return your answer as ONLY a valid JSON list of the exact food names. Do not add any other text.
-        Example: ["Grilled Chicken Breast", "Steamed Broccoli", "Brown Rice"]
+        
+        Return your answer as ONLY a valid JSON object with two keys:
+        1. "foods": A JSON list of the exact food names.
+        2. "explanation": A brief 1-2 sentence reason for why this meal is a good choice.
+        
+        Example:
+        {{
+          "foods": ["Grilled Chicken Breast", "Steamed Broccoli", "Brown Rice"],
+          "explanation": "This meal provides lean protein from the chicken, fiber and vitamins from the broccoli, and complex carbs from the brown rice for sustained energy."
+        }}
         """
         try:
             client = genai.Client(api_key=API_KEY)
             model_name = "gemini-2.5-flash"
             response = client.models.generate_content(model=model_name, contents=prompt)
+            
+            # --- NEW PARSING LOGIC ---
             clean_response = response.text.strip().replace("```json", "").replace("```", "")
-            suggested_names = json.loads(clean_response)
+            ai_data = json.loads(clean_response)
+            
+            suggested_names = ai_data.get("foods", [])
+            explanation = ai_data.get("explanation", "No explanation provided by AI.")
+            
+            if not suggested_names:
+                return {"error": "AI could not find a valid combination."}
+
             suggestion = []
             totals_map = {'p': 0, 'c': 0, 'f': 0}
             for name in suggested_names:
@@ -215,16 +237,24 @@ class MealFinder:
                         totals_map['c'] += item['c']
                         totals_map['f'] += item['f']
                         break
+            
             if not suggestion: return {"error": "AI could not find a valid combination."}
+            
             totals_map['calories'] = (totals_map['p'] * 4) + (totals_map['c'] * 4) + (totals_map['f']* 9)
-            return {"plan": suggestion, "totals": totals_map, "court": court_name, "meal_name": meal_name}
+            
+            # Return the full object with the explanation
+            return {
+                "plan": suggestion, 
+                "totals": totals_map, 
+                "court": court_name, 
+                "meal_name": meal_name,
+                "explanation": explanation 
+            }
         
         except Exception as e:
-            # --- NEW RETRY LOGIC ---
-            # Check if it's a 429 error and we haven't already retried
+            # (Rest of the error/retry logic is unchanged)
             if "429 RESOURCE_EXHAUSTED" in str(e) and not is_retry:
                 print(f"Gemini API Error for {court_name}/{meal_name}: 429 Rate Limit.")
-                # Try to parse the retry delay from the error string
                 retry_match = re.search(r"retryDelay': '(\d+)", str(e))
                 delay = 15 # Default delay
                 if retry_match:
@@ -232,10 +262,8 @@ class MealFinder:
                 
                 print(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
-                # Retry the request, marking it as a retry
                 return self._fetch_ai_suggestion_from_api(court_name, meal_name, is_retry=True) 
             
-            # If it's not a 429, or the retry failed, return the error
             print(f"Gemini API Error for {court_name}/{meal_name}: {e}")
             return {"error": "The AI suggestion failed. Try again."}
 
