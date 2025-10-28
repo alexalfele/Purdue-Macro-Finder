@@ -188,7 +188,7 @@ class MealFinder:
         available_items = [item for item in self.master_item_list if item['court'] == court_name and item['meal_name'] == meal_name]
         if not available_items: return {"error": "No items found for this dining court and meal."}
         
-        food_list_str = "\n".join([f"- {item['name']} (P:{item['p']}g, C:{item['c']}g, F:{item['f']}g)" for item in available_items])
+        food_list_str = "\n".join([f"- {item['name']} (P:{item['p']}g, C:{item.get('c', 0)}g, F:{item.get('f', 0)}g)" for item in available_items])
         
         # --- MODIFIED PROMPT ---
         # Ask for a JSON object with 'foods' and 'explanation'
@@ -233,9 +233,9 @@ class MealFinder:
                 for item in available_items:
                     if item['name'] == name:
                         suggestion.append(item)
-                        totals_map['p'] += item['p']
-                        totals_map['c'] += item['c']
-                        totals_map['f'] += item['f']
+                        totals_map['p'] += item.get('p', 0)
+                        totals_map['c'] += item.get('c', 0)
+                        totals_map['f'] += item.get('f', 0)
                         break
             
             if not suggestion: return {"error": "AI could not find a valid combination."}
