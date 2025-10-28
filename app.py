@@ -2,96 +2,116 @@ import os
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from meal_finder_engine import MealFinder # Import your class
+from meal_finder_engine import MealFinder
+import threading # Need to import threading
 
 # --- 1. SETUP THE FLASK APP ---
 app = Flask(__name__)
 CORS(app) 
 
-# --- 2. CLEANUP OLD CACHES ---
+# --- 2. LAZY INITIALIZATION SETUP ---
+# We use a global variable and a lock for thread-safe, one-time initialization.
+# These are defined here, but not run until the first request.
+meal_finder_engine = None
+engine_lock = threading.Lock()
+
 def cleanup_old_caches():
+    """Cleans up old cache files from previous days."""
     today_str = datetime.now().strftime('%Y-%m-%d')
+    print(f"Cleaning caches, keeping files for: {today_str}")
     # Use '.' to refer to the current directory
     for filename in os.listdir('.'): 
-        if filename.startswith("menu_cache_") and today_str not in filename:
+        is_menu_cache = filename.startswith("menu_cache_")
+        is_ai_cache = filename.startswith("ai_cache_")
+        
+        if (is_menu_cache or is_ai_cache) and today_str not in filename:
             try: 
                 os.remove(filename)
                 print(f"Removed old cache: {filename}")
             except OSError as e: 
                 print(f"Error removing old cache file {filename}: {e}")
+
+def get_engine():
+    """
+    Initializes and returns the MealFinder engine.
+    This is thread-safe and ensures it only runs once.
+    """
+    global meal_finder_engine # Use the global variable
+    
+    # Fast path: If engine is already initialized, just return it.
+    if meal_finder_engine:
+        return meal_finder_engine
+    
+    # Slow path: Engine not initialized. Acquire lock.
+    with engine_lock:
+        # Double-check: Another thread might have initialized it
+        # while we were waiting for the lock.
+        if meal_finder_engine:
+            return meal_finder_engine
+            
+        # --- This code now runs only ONCE, on the first request ---
+        print("FIRST REQUEST: Initializing MealFinder engine...")
+        cleanup_old_caches()
         
-        # --- ADDED ---
-        # Also clean up old AI caches
-        if filename.startswith("ai_cache_") and today_str not in filename:
-            try: 
-                os.remove(filename)
-                print(f"Removed old AI cache: {filename}")
-            except OSError as e: 
-                print(f"Error removing old AI cache file {filename}: {e}")
+        # Assign to the global variable
+        meal_finder_engine = MealFinder()
+        
+        print("FIRST REQUEST: Starting background data loaders...")
+        meal_finder_engine.start_background_loaders()
+        print("FIRST REQUEST: Initialization complete. Engine is live.")
+        # --- End of one-time initialization ---
+        
+        return meal_finder_engine
 
-# --- 3. CREATE ENGINE AND START BACKGROUND LOADING ---
-cleanup_old_caches()
-print("Initializing MealFinder engine...")
-meal_finder_engine = MealFinder()
+# --- 3. API ENDPOINTS ---
+# All endpoints must now call get_engine() first.
 
-# Start all data loading (Menus + AI) in background threads
-# This allows the Flask server to start immediately.
-print("Starting background data loaders...")
-meal_finder_engine.start_background_loaders()
-print("Flask server starting up... 🚀")
-
-
-# --- 4. CREATE THE API ENDPOINT FOR FINDING MEALS ---
 @app.route("/api/find_meal", methods=["POST"])
 def api_find_meal():
-    # --- ADDED CHECK ---
-    # 503 Service Unavailable
-    if not meal_finder_engine.data_loaded:
+    engine = get_engine() # Get the initialized engine
+
+    # Check if the engine's data is loaded yet
+    if not engine.data_loaded:
         return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
     
     try:
-        # Get all the user inputs from the web request's JSON body
         data = request.json
         targets = data.get('targets', {})
         meal_periods = data.get('meal_periods', ['Lunch'])
         exclusion_list = data.get('exclusion_list', [])
         dietary_filters = data.get('dietary_filters', {})
 
-        # Run your existing algorithm
-        result = meal_finder_engine.find_best_meal(
+        result = engine.find_best_meal(
             targets,
             meal_periods,
             exclusion_list,
             dietary_filters
         )
-        
-        # Send the result back to the browser as JSON
         return jsonify(result)
         
     except Exception as e:
         print(f"Error in /api/find_meal: {e}")
-        return jsonify({"error": str(e)}), 500 # Send an error message
+        return jsonify({"error": str(e)}), 500
 
-# --- 5. CREATE THE API ENDPOINT FOR TOP PROTEIN FOODS ---
 @app.route("/api/top_foods", methods=["GET"])
 def api_get_top_foods():
-    # --- ADDED CHECK ---
-    if not meal_finder_engine.data_loaded:
+    engine = get_engine() # Get the initialized engine
+
+    if not engine.data_loaded:
         return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
         
     try:
-        top_foods = meal_finder_engine.get_top_protein_foods()
+        top_foods = engine.get_top_protein_foods()
         return jsonify(top_foods)
     except Exception as e:
         print(f"Error in /api/top_foods: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 5b. CREATE THE API ENDPOINT FOR AI SUGGESTION ---
 @app.route("/api/suggest_meal", methods=["POST"])
 def api_suggest_meal():
-    # --- MODIFIED CHECK ---
-    # First, check if the base menu data is loaded
-    if not meal_finder_engine.data_loaded:
+    engine = get_engine() # Get the initialized engine
+
+    if not engine.data_loaded:
         return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
 
     try:
@@ -102,11 +122,9 @@ def api_suggest_meal():
         if not court or not meal:
             return jsonify({"error": "Court and meal period are required."}), 400
             
-        suggestion = meal_finder_engine.get_ai_suggestion(court, meal)
+        suggestion = engine.get_ai_suggestion(court, meal)
         
-        # --- ADDED CHECK FOR "LOADING" ---
-        # The cache might not be warm yet, but the data is loaded
-        # Check if the suggestion is a "loading" placeholder
+        # Check if the AI suggestion itself is still loading
         if isinstance(suggestion, dict) and suggestion.get("status") == "loading":
             return jsonify({"error": "AI suggestions are still being pre-loaded. Please try again in a moment."}), 503
             
@@ -116,8 +134,10 @@ def api_suggest_meal():
         print(f"Error in /api/suggest_meal: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 6. START THE SERVER ---
+# --- 4. START THE SERVER (for local development) ---
 if __name__ == "__main__":
-    # This modification allows Render to set the port
-    # We also turn off debug mode for production
+    # This block is NOT run by gunicorn, only when you run "python app.py"
+    print("Starting Flask development server...")
+    # For local dev, we call get_engine() once to start the loaders
+    get_engine() 
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
