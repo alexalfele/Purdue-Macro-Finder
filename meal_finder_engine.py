@@ -33,10 +33,12 @@ class MealFinder:
         }
         """
         self.dining_courts = ["Wiley", "Earhart", "Windsor", "Ford", "Hillenbrand"]
+        
+        # --- FIX 1: Set date dynamically in loader methods, not here ---
         self.todays_date = datetime.now().strftime('%Y-%m-%d')
         self.cache_file = f"menu_cache_{self.todays_date}.json"
-        
         self.ai_cache_file = f"ai_cache_{self.todays_date}.json"
+        # --- END FIX 1 ---
         
         self.master_item_list = []
         self.data_loaded = False
@@ -76,8 +78,11 @@ class MealFinder:
         """Fetches menu data for a single dining court, using cache if available."""
         menu_data = cached_data.get(court)
         if menu_data:
-            return court, menu_data, False
+            # We trust the cached_data is for the right date because
+            # _load_all_menu_data is responsible for loading the correct day's file
+            return court, menu_data, False 
         try:
+            # self.todays_date is guaranteed to be correct by _load_all_menu_data
             variables = {"courtName": court, "date": self.todays_date}
             resp = requests.post(self.url, json={"query": self.query, "variables": variables}, headers=self.headers)
             resp.raise_for_status()
@@ -91,7 +96,25 @@ class MealFinder:
         Manages a daily cache to avoid excessive API calls.
         This is now run in a background thread.
         """
-        print("Background thread: Starting menu data load...")
+        
+        # --- FIX 1: Refresh date on every load ---
+        # This ensures that if the server is on for days, this method
+        # will always fetch/load the *current* day's menu.
+        current_date_str = datetime.now().strftime('%Y-%m-%d')
+        
+        # If the data is already loaded and for the correct date, do nothing.
+        if self.data_loaded and self.todays_date == current_date_str:
+            print(f"Background thread: Menu data for {current_date_str} is already loaded.")
+            return
+
+        # If data is stale or not loaded, update dates and load fresh.
+        self.todays_date = current_date_str
+        self.cache_file = f"menu_cache_{self.todays_date}.json"
+        self.master_item_list = [] # Clear stale data
+        self.data_loaded = False
+        # --- END FIX 1 ---
+        
+        print(f"Background thread: Starting menu data load for {self.todays_date}...")
         cached_data, needs_to_save_cache = {}, False
         if os.path.exists(self.cache_file):
             with open(self.cache_file, 'r') as f:
@@ -137,7 +160,7 @@ class MealFinder:
         
         # This is the crucial flag that unlocks the API
         self.data_loaded = True 
-        print("Background thread: Menu data load complete. 🥞")
+        print(f"Background thread: Menu data load complete for {self.todays_date}. 🥞")
 
     def get_top_protein_foods(self, count=25):
         # The data_loaded check is now handled in app.py
@@ -155,6 +178,12 @@ class MealFinder:
 
     def _load_ai_cache_from_disk(self):
         """Loads the AI suggestion cache from a JSON file."""
+        
+        # --- FIX 1: Refresh date on every load ---
+        self.todays_date = datetime.now().strftime('%Y-%m-%d')
+        self.ai_cache_file = f"ai_cache_{self.todays_date}.json"
+        # --- END FIX 1 ---
+        
         if os.path.exists(self.ai_cache_file):
             print(f"AI Pre-loader: Found and loading {self.ai_cache_file} from disk.")
             try:
@@ -163,7 +192,7 @@ class MealFinder:
                     data_from_disk = json.load(f)
                     with self.cache_lock:
                         self.ai_suggestions_cache = {tuple(k): v for k, v in data_from_disk.items()}
-                        print(f"AI Pre-loader: Loaded {len(self.ai_suggestions_cache)} suggestions from disk.")
+                        print(f"AI Pre-loader: Loaded {len(self.ai_suggestions_cache)} suggestions from disk for {self.todays_date}.")
             except (json.JSONDecodeError, TypeError) as e:
                 print(f"AI Pre-loader: Failed to read AI cache file. Will regenerate. Error: {e}")
                 self.ai_suggestions_cache = {}
@@ -174,6 +203,7 @@ class MealFinder:
             # We must convert tuple keys to lists for JSON serialization
             data_to_save = {list(k): v for k, v in self.ai_suggestions_cache.items()}
         try:
+            # self.ai_cache_file is guaranteed to be correct by _load_ai_cache_from_disk
             with open(self.ai_cache_file, 'w') as f:
                 json.dump(data_to_save, f)
             # print(f"AI Pre-loader: Saved {len(data_to_save)} suggestions to {self.ai_cache_file}.")
@@ -193,7 +223,8 @@ class MealFinder:
         # --- MODIFIED PROMPT (Critique #6) ---
         prompt = f"""
         You are a Purdue University dining hall nutritionist. 
-        Your goal is to help a student pick a balanced, healthy, and protein rich meal.
+        Your goal is to help a student pick a balanced, healthy, and protein rich meal
+        from the {court_name} dining court for {meal_name}.
         
         Here is the full list of available foods:
         {food_list_str}
@@ -213,8 +244,8 @@ class MealFinder:
         """
         try:
             client = genai.Client(api_key=API_KEY)
-            model_name = "gemini-2.5-flash"
-            response = client.models.generate_content(model=model_name, contents=prompt)
+            model_name = "gemini-1.5-flash" # More modern model
+            response = client.generate_content(model=f"models/{model_name}", contents=prompt)
             
             # --- NEW PARSING LOGIC ---
             clean_response = response.text.strip().replace("```json", "").replace("```", "")
@@ -252,12 +283,9 @@ class MealFinder:
         
         except Exception as e:
             # --- 429 RATE LIMIT FIX ---
-            if "429 RESOURCE_EXHAUSTED" in str(e) and not is_retry:
+            if "429" in str(e) and "RESOURCE_EXHAUSTED" in str(e) and not is_retry:
                 print(f"Gemini API Error for {court_name}/{meal_name}: 429 Rate Limit.")
-                retry_match = re.search(r"retryDelay': '(\d+)", str(e))
-                delay = 15 # Default delay
-                if retry_match:
-                    delay = int(retry_match.group(1)) + 1 # Add 1 second buffer
+                delay = random.randint(5, 15) # Random delay
                 
                 print(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
@@ -269,6 +297,16 @@ class MealFinder:
 
     def get_ai_suggestion(self, court_name, meal_name):
         """Public method to get an AI suggestion. Checks cache, then generates on-demand."""
+        
+        # --- FIX 1: Ensure menu data is for today ---
+        # This check forces the menu data to be re-loaded if the day has changed.
+        if self.todays_date != datetime.now().strftime('%Y-%m-%d'):
+            print("AI Suggestion: Stale menu data detected. Forcing reload.")
+            self._load_all_menu_data()
+            # Also force AI cache to reload
+            self._background_preloader_task()
+        # --- END FIX 1 ---
+        
         cache_key = (court_name, meal_name)
         
         if cache_key in self.ai_suggestions_cache:
@@ -296,9 +334,18 @@ class MealFinder:
             while not self.data_loaded:
                 threading.Event().wait(1)
         
+        # --- FIX 1: Check if menu data is stale *before* loading AI cache ---
+        if self.todays_date != datetime.now().strftime('%Y-%m-%d'):
+            print("AI Pre-loader: Stale menu data detected. Forcing reload before pre-loading AI.")
+            self._load_all_menu_data()
+            # Wait for it to finish
+            while not self.data_loaded:
+                threading.Event().wait(1)
+        # --- END FIX 1 ---
+        
         print("AI Pre-loader: Menu data loaded. Checking AI cache...")
         
-        # 2. Load existing AI suggestions from disk
+        # 2. Load existing AI suggestions from disk (this will now use the correct date)
         self._load_ai_cache_from_disk()
 
         # 3. Create a set of all unique (court, meal) jobs that *should* exist
@@ -364,11 +411,70 @@ class MealFinder:
 
     # --- END AI SUGGESTION CACHING ---
 
+    # --- FIX 2: Refactored find_best_meal ---
+    
+    def _run_optimization_for_court(self, available_items, targets, weights, penalties):
+        """
+        Runs the simulated annealing algorithm for a list of items
+        from a *single* dining court.
+        """
+        if len(available_items) < 2: 
+            return None, float('inf'), {}
+            
+        best_solution, best_score, best_totals = None, float('inf'), {}
+        temp, cooling_rate, iterations = 10000, 0.99, 3000
+        
+        # Start with a random solution of 4 items, or all items if fewer than 4
+        current_solution = random.sample(available_items, min(4, len(available_items)))
+        
+        for _ in range(iterations):
+            if temp <= 1: break
+            neighbor = list(current_solution)
+            
+            # Randomly decide to swap, add, or remove an item
+            action = random.choice(['swap', 'add', 'remove'])
+
+            if action == 'swap' and len(neighbor) > 1:
+                neighbor[random.randrange(len(neighbor))] = random.choice(available_items)
+            
+            elif action == 'add' and len(neighbor) < 5:
+                # Ensure we don't add a duplicate
+                possible_adds = [i for i in available_items if i not in neighbor]
+                if possible_adds:
+                    neighbor.append(random.choice(possible_adds))
+                    
+            elif action == 'remove' and len(neighbor) > 2:
+                neighbor.pop(random.randrange(len(neighbor)))
+
+            current_score, _ = self._calculate_score(current_solution, targets, weights, penalties)
+            neighbor_score, neighbor_totals = self._calculate_score(neighbor, targets, weights, penalties)
+            
+            if neighbor_score < current_score or random.random() < math.exp((current_score - neighbor_score) / temp):
+                current_solution = neighbor
+                
+            if neighbor_score < best_score:
+                best_score, best_totals, best_solution = neighbor_score, neighbor_totals, neighbor
+                
+            temp *= cooling_rate
+        
+        return best_solution, best_score, best_totals
+
+
     def find_best_meal(self, targets, meal_periods_to_check, exclusion_list=[], dietary_filters={}):
+        """
+        Finds the best meal plan by checking *each* dining court individually
+        and returning the single best plan from all courts.
+        """
+        # --- FIX 1: Ensure menu data is for today ---
+        if self.todays_date != datetime.now().strftime('%Y-%m-%d'):
+            print("Find Meal: Stale menu data detected. Forcing reload.")
+            self._load_all_menu_data()
+        # --- END FIX 1 ---
+        
         if not self.data_loaded:
-            # This check is a fallback, app.py should handle it
             return None 
         
+        # 1. Apply dietary filters to the master list
         filtered_master_list = []
         for item in self.master_item_list:
             traits = item.get('traits', [])
@@ -379,37 +485,49 @@ class MealFinder:
             # Add other filters as needed
             if passes_filter:
                 filtered_master_list.append(item)
-
-        available_items = [item for item in filtered_master_list if item['name'] not in exclusion_list and item['meal_name'] in meal_periods_to_check]
-        if len(available_items) < 2: 
-            return None # <-- This was causing the JSON error!
-
-        best_solution, best_score, best_totals = None, float('inf'), {}
-        weights = {'p': 3.0, 'c': 1.0, 'f': 1.5}; penalties = {'under_p': 2, 'over_c': 1.2, 'over_f': 3}
-        temp, cooling_rate, iterations = 10000, 0.99, 3000
-        current_solution = random.sample(available_items, min(4, len(available_items)))
-        for _ in range(iterations):
-            if temp <= 1: break
-            neighbor = list(current_solution)
-            if len(neighbor) > 1 and random.random() < 0.7:
-                neighbor[random.randrange(len(neighbor))] = random.choice(available_items)
-            
-            # --- SYNTAX ERROR FIX ---
-            elif len(neighbor) < 5 and random.random() < 0.5:
-            # --- END OF FIX ---
-            
-                if len(available_items) > len(neighbor): neighbor.append(random.choice([i for i in available_items if i not in neighbor]))
-            elif len(neighbor) > 2:
-                neighbor.pop(random.randrange(len(neighbor)))
-            current_score, _ = self._calculate_score(current_solution, targets, weights, penalties)
-            neighbor_score, neighbor_totals = self._calculate_score(neighbor, targets, weights, penalties)
-            if neighbor_score < current_score or random.random() < math.exp((current_score - neighbor_score) / temp):
-                current_solution = neighbor
-            if neighbor_score < best_score:
-                best_score, best_totals, best_solution = neighbor_score, neighbor_totals, neighbor
-            temp *= cooling_rate
         
-        if not best_solution: 
-            return None # <-- This was also causing the JSON error!
+        # 2. Get a set of all unique, available courts from the filtered list
+        available_courts = set(
+            item['court'] for item in filtered_master_list 
+            if item['name'] not in exclusion_list and item['meal_name'] in meal_periods_to_check
+        )
+
+        if not available_courts:
+            return None
             
-        return {"score": best_score, "court": best_solution[0]['court'], "meal_name": best_solution[0]['meal_name'], "plan": best_solution, "totals": best_totals}
+        overall_best_solution, overall_best_score = None, float('inf')
+        weights = {'p': 3.0, 'c': 1.0, 'f': 1.5}
+        penalties = {'under_p': 2, 'over_c': 1.2, 'over_f': 3}
+
+        # 3. Loop through each court and run the optimization
+        for court in available_courts:
+            # 4. Get all available items *for this court only*
+            court_specific_items = [
+                item for item in filtered_master_list 
+                if item['court'] == court and 
+                   item['name'] not in exclusion_list and 
+                   item['meal_name'] in meal_periods_to_check
+            ]
+
+            # 5. Run the algorithm for this single court
+            (court_solution, 
+             court_score, 
+             court_totals) = self._run_optimization_for_court(
+                court_specific_items, targets, weights, penalties
+            )
+
+            # 6. Check if this court's best meal is the new overall best
+            if court_solution and court_score < overall_best_score:
+                overall_best_score = court_score
+                overall_best_solution = {
+                    "score": court_score, 
+                    "court": court, # The court is now guaranteed to be correct
+                    "meal_name": court_solution[0]['meal_name'], 
+                    "plan": court_solution, 
+                    "totals": court_totals
+                }
+        
+        # 7. Return the single best meal plan found across all courts
+        return overall_best_solution
+    
+    # --- END FIX 2 ---
