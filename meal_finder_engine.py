@@ -244,7 +244,7 @@ class MealFinder:
         """
         try:
             client = genai.Client(api_key=API_KEY)
-            model_name = "gemini-1.5-flash" # More modern model
+            model_name = "gemini-2.5-flash" # More modern model
             
             # --- API CALL FIX ---
             # Changed client.generate_content to client.models.generate_content
