@@ -3,7 +3,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // API URL - *** THIS IS THE FIX ***
     // Point to your live Render backend URL
-    const API_BASE_URL = "https://purdue-macro-finder.onrender.com"; 
+    const API_BASE_URL = "https://purdue-macro-finder.onrender.com";
     
     // Tabs
     const tabButtons = document.querySelectorAll('.tab-button');
