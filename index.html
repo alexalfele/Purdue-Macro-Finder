@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Find the perfect meal at Purdue dining courts based on your macro targets">
     <title>Purdue Macro Finder</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -13,19 +14,27 @@
     </header>
 
     <div class="app-container">
+        <!-- CONTROLS PANEL -->
         <div class="controls-panel">
             
-            <div class="tab-buttons">
-                <button class="tab-button active" data-tab="ai">AI Suggestion</button>
-                <button class="tab-button" data-tab="manual">Manual Macros</button>
+            <!-- Tab Buttons -->
+            <div class="tab-buttons" role="tablist" aria-label="Meal finding methods">
+                <button class="tab-button active" data-tab="ai" role="tab" aria-selected="true" aria-controls="ai">
+                    AI Suggestion
+                </button>
+                <button class="tab-button" data-tab="manual" role="tab" aria-selected="false" aria-controls="manual">
+                    Manual Macros
+                </button>
             </div>
 
-            <div id="ai" class="tab-content active">
+            <!-- AI TAB -->
+            <div id="ai" class="tab-content active" role="tabpanel" aria-labelledby="ai-tab">
                 <form id="ai-form">
                     <div class="card">
                         <h2 class="form-header">Get an AI Meal</h2>
+                        
                         <label for="ai-court">Dining Court</label>
-                        <select id="ai-court" name="ai-court">
+                        <select id="ai-court" name="ai-court" aria-label="Select dining court">
                             <option value="Wiley">Wiley</option>
                             <option value="Earhart">Earhart</option>
                             <option value="Windsor">Windsor</option>
@@ -33,8 +42,8 @@
                             <option value="Hillenbrand">Hillenbrand</option>
                         </select>
                         
-                        <label for="ai-meal">Meal</label>
-                        <select id="ai-meal" name="ai-meal">
+                        <label for="ai-meal">Meal Period</label>
+                        <select id="ai-meal" name="ai-meal" aria-label="Select meal period">
                             <option value="Breakfast">Breakfast</option>
                             <option value="Lunch" selected>Lunch</option>
                             <option value="Dinner">Dinner</option>
@@ -43,87 +52,130 @@
                 </form>
             </div>
 
-            <div id="manual" class="tab-content">
+            <!-- MANUAL TAB -->
+            <div id="manual" class="tab-content" role="tabpanel" aria-labelledby="manual-tab">
                 <form id="manual-form">
+                    
+                    <!-- Target Macros -->
                     <details class="collapsible-card" open>
                         <summary>Target Macros</summary>
                         <div class="macro-grid">
                             <div>
                                 <label for="target-protein">Protein (g)</label>
-                                <input type="number" id="target-protein" value="40">
+                                <input type="number" id="target-protein" value="40" min="0" max="500" aria-label="Target protein in grams">
                             </div>
                             <div>
                                 <label for="target-carbs">Carbs (g)</label>
-                                <input type="number" id="target-carbs" value="60">
+                                <input type="number" id="target-carbs" value="60" min="0" max="500" aria-label="Target carbs in grams">
                             </div>
                             <div>
                                 <label for="target-fat">Fat (g)</label>
-                                <input type="number" id="target-fat" value="20">
+                                <input type="number" id="target-fat" value="20" min="0" max="500" aria-label="Target fat in grams">
                             </div>
                         </div>
                     </details>
                     
+                    <!-- Dietary Filters -->
                     <details class="collapsible-card" open>
                         <summary>Dietary Filters</summary>
                         <div class="filters">
-                            <label><input type="checkbox" data-filter="Vegetarian"> Vegetarian</label>
-                            <label><input type="checkbox" data-filter="Vegan"> Vegan</label>
-                            <label><input type="checkbox" data-filter="No Gluten"> No Gluten</label>
+                            <label>
+                                <input type="checkbox" data-filter="Vegetarian" aria-label="Vegetarian only">
+                                Vegetarian
+                            </label>
+                            <label>
+                                <input type="checkbox" data-filter="Vegan" aria-label="Vegan only">
+                                Vegan
+                            </label>
+                            <label>
+                                <input type="checkbox" data-filter="No Gluten" aria-label="No gluten">
+                                No Gluten
+                            </label>
                         </div>
                     </details>
 
+                    <!-- Meal Periods -->
                     <details class="collapsible-card">
                         <summary>Meal Periods</summary>
                         <div class="filters">
-                            <label><input type="checkbox" name="meal_period" value="Breakfast"> Breakfast</label>
-                            <label><input type="checkbox" name="meal_period" value="Lunch" checked> Lunch</label>
-                            <label><input type="checkbox" name="meal_period" value="Dinner" checked> Dinner</label>
-                            <label><input type="checkbox" name="meal_period" value="Late Night"> Late Night</label>
+                            <label>
+                                <input type="checkbox" name="meal_period" value="Breakfast" aria-label="Include breakfast">
+                                Breakfast
+                            </label>
+                            <label>
+                                <input type="checkbox" name="meal_period" value="Lunch" checked aria-label="Include lunch">
+                                Lunch
+                            </label>
+                            <label>
+                                <input type="checkbox" name="meal_period" value="Dinner" checked aria-label="Include dinner">
+                                Dinner
+                            </label>
+                            <label>
+                                <input type="checkbox" name="meal_period" value="Late Night" aria-label="Include late night">
+                                Late Night
+                            </label>
                         </div>
                     </details>
                 </form>
             </div>
 
+            <!-- CTA Footer -->
             <div class="cta-footer">
-                <button id="generate-button" class="cta-button">
+                <button id="generate-button" class="cta-button" aria-label="Generate meal plan">
                     Generate My Meal Plan 🍽️
                 </button>
-                <button id="reset-button">Clear</button>
-                <p id="status-label">Select a tab and generate a meal.</p>
+                <button id="reset-button" aria-label="Clear all inputs and results">
+                    Clear
+                </button>
+                <p id="status-label" role="status" aria-live="polite">Select a tab and generate a meal.</p>
             </div>
 
-        </div> <div class="results-panel">
+        </div>
+
+        <!-- RESULTS PANEL -->
+        <div class="results-panel">
+            
+            <!-- Placeholder -->
             <div id="results-placeholder">
                 <h3>Your Meal Awaits</h3>
                 <p>Your meal recommendation will appear here.</p>
             </div>
 
-            <div id="loading-spinner" class="hidden">
+            <!-- Loading Spinner -->
+            <div id="loading-spinner" class="hidden" role="status" aria-live="polite">
                 <div class="spinner"></div>
                 <p>Finding your meal...</p>
             </div>
 
+            <!-- Results Content -->
             <div id="results-content" class="hidden">
                 <h2 id="result-header">Your Meal Plan</h2>
                 
+                <!-- AI Explanation Card -->
                 <div id="ai-explanation" class="card explanation-card hidden">
                     <h3>Why this meal?</h3>
                     <p id="ai-explanation-text"></p>
                 </div>
                 
+                <!-- Macro Breakdown Chart -->
                 <div class="card">
                     <h3>Macro Breakdown</h3>
                     <div class="chart-container">
-                        <canvas id="macro-chart"></canvas>
+                        <canvas id="macro-chart" aria-label="Macro breakdown pie chart"></canvas>
                     </div>
                 </div>
 
+                <!-- Meal Items -->
                 <div class="card">
                     <h3>Items</h3>
-                    <div id="meal-plan-items">
-                        </div>
+                    <div id="meal-plan-items" role="list">
+                        <!-- Items will be dynamically inserted here -->
+                    </div>
                 </div>
             </div>
-        </div> </div> <script src="script.js"></script>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
 </body>
 </html>
