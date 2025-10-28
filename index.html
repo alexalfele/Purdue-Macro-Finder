@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Purdue Macro Finder</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <header class="header">
+        <h1>Purdue Macro Finder</h1>
+    </header>
+
+    <div class="app-container">
+        <div class="controls-panel">
+            
+            <div class="tab-buttons">
+                <button class="tab-button active" data-tab="ai">AI Suggestion</button>
+                <button class="tab-button" data-tab="manual">Manual Macros</button>
+            </div>
+
+            <div id="ai" class="tab-content active">
+                <form id="ai-form">
+                    <div class="card">
+                        <h2 class="form-header">Get an AI Meal</h2>
+                        <label for="ai-court">Dining Court</label>
+                        <select id="ai-court" name="ai-court">
+                            <option value="Wiley">Wiley</option>
+                            <option value="Earhart">Earhart</option>
+                            <option value="Windsor">Windsor</option>
+                            <option value="Ford">Ford</option>
+                            <option value="Hillenbrand">Hillenbrand</option>
+                        </select>
+                        
+                        <label for="ai-meal">Meal</label>
+                        <select id="ai-meal" name="ai-meal">
+                            <option value="Breakfast">Breakfast</option>
+                            <option value="Lunch" selected>Lunch</option>
+                            <option value="Dinner">Dinner</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+
+            <div id="manual" class="tab-content">
+                <form id="manual-form">
+                    <details class="collapsible-card" open>
+                        <summary>Target Macros</summary>
+                        <div class="macro-grid">
+                            <div>
+                                <label for="target-protein">Protein (g)</label>
+                                <input type="number" id="target-protein" value="40">
+                            </div>
+                            <div>
+                                <label for="target-carbs">Carbs (g)</label>
+                                <input type="number" id="target-carbs" value="60">
+                            </div>
+                            <div>
+                                <label for="target-fat">Fat (g)</label>
+                                <input type="number" id="target-fat" value="20">
+                            </div>
+                        </div>
+                    </details>
+                    
+                    <details class="collapsible-card" open>
+                        <summary>Dietary Filters</summary>
+                        <div class="filters">
+                            <label><input type="checkbox" data-filter="Vegetarian"> Vegetarian</label>
+                            <label><input type="checkbox" data-filter="Vegan"> Vegan</label>
+                            <label><input type="checkbox" data-filter="No Gluten"> No Gluten</label>
+                        </div>
+                    </details>
+
+                    <details class="collapsible-card">
+                        <summary>Meal Periods</summary>
+                        <div class="filters">
+                            <label><input type="checkbox" name="meal_period" value="Breakfast"> Breakfast</label>
+                            <label><input type="checkbox" name="meal_period" value="Lunch" checked> Lunch</label>
+                            <label><input type="checkbox" name="meal_period" value="Dinner" checked> Dinner</label>
+                            <label><input type="checkbox" name="meal_period" value="Late Night"> Late Night</label>
+                        </div>
+                    </details>
+                </form>
+            </div>
+
+            <div class="cta-footer">
+                <button id="generate-button" class="cta-button">
+                    Generate My Meal Plan 🍽️
+                </button>
+                <button id="reset-button">Clear</button>
+                <p id="status-label">Select a tab and generate a meal.</p>
+            </div>
+
+        </div> <div class="results-panel">
+            <div id="results-placeholder">
+                <h3>Your Meal Awaits</h3>
+                <p>Your meal recommendation will appear here.</p>
+            </div>
+
+            <div id="loading-spinner" class="hidden">
+                <div class="spinner"></div>
+                <p>Finding your meal...</p>
+            </div>
+
+            <div id="results-content" class="hidden">
+                <h2 id="result-header">Your Meal Plan</h2>
+                
+                <div id="ai-explanation" class="card explanation-card hidden">
+                    <h3>Why this meal?</h3>
+                    <p id="ai-explanation-text"></p>
+                </div>
+                
+                <div class="card">
+                    <h3>Macro Breakdown</h3>
+                    <div class="chart-container">
+                        <canvas id="macro-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>Items</h3>
+                    <div id="meal-plan-items">
+                        </div>
+                </div>
+            </div>
+        </div> </div> <script src="script.js"></script>
+</body>
+</html>
