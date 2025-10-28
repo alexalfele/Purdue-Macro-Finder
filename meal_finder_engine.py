@@ -32,10 +32,14 @@ class MealFinder:
         }
         """
         self.dining_courts = ["Wiley", "Earhart", "Windsor", "Ford", "Hillenbrand"]
+        # Define common meal periods to pre-load
+        self.common_meal_periods = ['Breakfast', 'Lunch', 'Dinner'] 
         self.todays_date = datetime.now().strftime('%Y-%m-%d')
         self.cache_file = f"menu_cache_{self.todays_date}.json"
         self.master_item_list = []
         self.data_loaded = False
+        # Add a cache for AI suggestions
+        self.ai_suggestions_cache = {}
 
     def _get_numeric_value(self, label_str):
         """Extracts a number from a string label (e.g., '15g' -> 15.0)."""
@@ -137,21 +141,19 @@ class MealFinder:
         protein_dense_foods.sort(key=lambda x: x['protein_density'], reverse=True)
         return protein_dense_foods[:count]
 
-    def get_ai_suggestion(self, court_name, meal_name):
+    # --- AI SUGGESTION REFACTOR ---
+
+    def _fetch_ai_suggestion_from_api(self, court_name, meal_name):
         """
-        Uses the Google Gemini API (with the new Client method) 
-        to suggest a balanced, healthy meal.
+        This is the core logic that calls the Gemini API.
+        It's now a private method called by the cache wrapper or the preloader.
         """
         # --- 1. Configure the API ---
-        # This securely gets the key you just added to Render.
         API_KEY = os.environ.get("GEMINI_API_KEY")
         if not API_KEY:
             return {"error": "AI service is not configured."}
         
-        # --- 2. Get the menu data (same as before) ---
-        if not self.data_loaded:
-            self._load_all_menu_data()
-            
+        # --- 2. Get the menu data ---
         available_items = [
             item for item in self.master_item_list 
             if item['court'] == court_name and item['meal_name'] == meal_name
@@ -161,14 +163,12 @@ class MealFinder:
             return {"error": "No items found for this dining court and meal."}
         
         # --- 3. Format the data for the AI ---
-        # We'll just send a list of item names and their macros
         food_list_str = "\n".join([
             f"- {item['name']} (P:{item['p']}g, C:{item['c']}g, F:{item['f']}g)" 
             for item in available_items
         ])
 
         # --- 4. Create the prompt ---
-        # We're asking the AI to act as a nutritionist and return *only* a JSON list
         prompt = f"""
         You are a Purdue University dining hall nutritionist. 
         Your goal is to help a student pick a balanced, healthy, and protein rich meal.
@@ -183,14 +183,9 @@ class MealFinder:
         Example: ["Grilled Chicken Breast", "Steamed Broccoli", "Brown Rice"]
         """
 
-        # --- 5. Call the API using the new Client method ---
+        # --- 5. Call the API ---
         try:
-            # THIS IS THE FIX:
-            # We removed `genai.configure()`
-            # And we pass the API key directly to the client.
             client = genai.Client(api_key=API_KEY)
-            
-            # Use the model name from the quickstart
             model_name = "gemini-2.5-flash"
             
             response = client.models.generate_content(
@@ -198,10 +193,7 @@ class MealFinder:
                 contents=prompt,
             )
             
-            # Clean up the response text (it sometimes adds ```json ... ```)
             clean_response = response.text.strip().replace("```json", "").replace("```", "")
-            
-            # The AI gives us a list of names
             suggested_names = json.loads(clean_response)
 
             # --- 6. Find the full items for those names ---
@@ -209,7 +201,6 @@ class MealFinder:
             totals_map = {'p': 0, 'c': 0, 'f': 0}
             
             for name in suggested_names:
-                # Find the matching item from our original list
                 for item in available_items:
                     if item['name'] == name:
                         suggestion.append(item)
@@ -227,9 +218,72 @@ class MealFinder:
             return {"plan": suggestion, "totals": totals_map, "court": court_name, "meal_name": meal_name}
 
         except Exception as e:
-            print(f"Gemini API Error: {e}")
-            # This will now print the *actual* error to your Render logs
+            print(f"Gemini API Error for {court_name}/{meal_name}: {e}")
             return {"error": "The AI suggestion failed. Try again."}
+
+
+    def get_ai_suggestion(self, court_name, meal_name):
+        """
+        Public method to get an AI suggestion.
+        It checks the cache first. If not found, it generates, caches, and returns.
+        """
+        if not self.data_loaded:
+            return {"error": "Menu data is not loaded yet."}
+            
+        cache_key = (court_name, meal_name)
+        
+        # 1. Check cache
+        if cache_key in self.ai_suggestions_cache:
+            # print(f"Cache HIT for AI suggestion: {court_name}/{meal_name}")
+            return self.ai_suggestions_cache[cache_key]
+        
+        # 2. If not in cache, generate on-demand
+        print(f"Cache MISS for AI suggestion: {court_name}/{meal_name}. Generating on-demand...")
+        suggestion = self._fetch_ai_suggestion_from_api(court_name, meal_name)
+        
+        # 3. Store in cache
+        self.ai_suggestions_cache[cache_key] = suggestion
+        
+        return suggestion
+
+
+    def _background_preloader_task(self):
+        """
+        The target function for the background thread.
+        It loops through all court/meal combos and populates the cache.
+        """
+        if not self.data_loaded:
+            print("Pre-loader waiting for data to be loaded...")
+            while not self.data_loaded:
+                threading.Event().wait(1) # Wait 1 second
+        
+        print("Starting AI suggestion pre-loading...")
+        for court in self.dining_courts:
+            for meal in self.common_meal_periods:
+                cache_key = (court, meal)
+                if cache_key not in self.ai_suggestions_cache:
+                    print(f"Pre-loading AI suggestion for: {court} / {meal}")
+                    try:
+                        suggestion = self._fetch_ai_suggestion_from_api(court, meal)
+                        self.ai_suggestions_cache[cache_key] = suggestion
+                    except Exception as e:
+                        print(f"Error pre-loading {court}/{meal}: {e}")
+                        self.ai_suggestions_cache[cache_key] = {"error": "Failed to pre-load suggestion."}
+        
+        print("AI suggestion pre-loading finished. 🎉")
+
+
+    def start_ai_suggestion_preloader(self):
+        """
+        Starts the background thread to pre-load AI suggestions.
+        This method is called from app.py.
+        """
+        print("Initializing AI suggestion pre-loader thread...")
+        # daemon=True ensures the thread exits when the main app exits
+        loader_thread = threading.Thread(target=self._background_preloader_task, daemon=True)
+        loader_thread.start()
+
+    # --- END AI SUGGESTION REFACTOR ---
 
     def find_best_meal(self, targets, meal_periods_to_check, exclusion_list=[], dietary_filters={}):
         if not self.data_loaded:
