@@ -1,15 +1,18 @@
 import os
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
+from flask import Flask, request, jsonify
+from flask_cors import CORS  # Import CORS
 from meal_finder_engine import MealFinder
 import threading
-import time # Import time for rate limit
-import re # Import re for rate limit
+import time 
+import re 
 
 # --- 1. SETUP THE FLASK APP ---
-# Serve files from the 'static' folder
-app = Flask(__name__, static_folder='static')
+# This is now an API-only server. No static_folder.
+app = Flask(__name__)
+
+# --- FIX: Enable CORS for all domains ---
+# This allows your Netlify frontend to call your Render backend.
 CORS(app) 
 
 # --- 2. LAZY INITIALIZATION SETUP ---
@@ -52,16 +55,12 @@ def get_engine():
         
         return meal_finder_engine
 
-# --- 3. ROUTE TO SERVE THE FRONTEND ---
+# --- 3. HEALTH CHECK ROUTE ---
+# Render and other services use this to see if your app is live.
 @app.route("/")
-def serve_index():
-    """Serves the index.html file from the static folder."""
-    return send_from_directory(app.static_folder, 'index.html')
-
-@app.route("/<path:path>")
-def serve_static_files(path):
-    """Serves other static files (like css, js) from the static folder."""
-    return send_from_directory(app.static_folder, path)
+def health_check():
+    """A simple route to confirm the server is running."""
+    return jsonify({"status": "healthy", "message": "Purdue Macro Finder API is running."})
 
 
 # --- 4. API ENDPOINTS ---
@@ -74,7 +73,7 @@ def api_find_meal():
     try:
         data = request.json
         targets = data.get('targets', {})
-        meal_periods = data.get('meal_periods', []) # Use list from request
+        meal_periods = data.get('meal_periods', []) 
         dietary_filters = data.get('dietary_filters', {})
         exclusion_list = data.get('exclusion_list', [])
 
@@ -88,10 +87,8 @@ def api_find_meal():
             dietary_filters
         )
         
-        # --- FIX for "Unexpected end of JSON input" ---
         if result is None:
             return jsonify({"error": "No meal plan found. Try adjusting your filters."}), 404
-        # --- END OF FIX ---
 
         return jsonify(result)
         
@@ -126,6 +123,8 @@ def api_suggest_meal():
 
 # --- 5. START THE SERVER ---
 if __name__ == "__main__":
+    # Gunicorn (on Render) will use this file, but not run this block.
+    # This is for local testing only.
     print("Starting Flask development server...")
     get_engine() 
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
