@@ -6,10 +6,9 @@ from meal_finder_engine import MealFinder # Import your class
 
 # --- 1. SETUP THE FLASK APP ---
 app = Flask(__name__)
-# This is crucial: it allows your frontend (on a different "origin") to make requests
 CORS(app) 
 
-# --- 2. CLEANUP OLD CACHES (Your original function) ---
+# --- 2. CLEANUP OLD CACHES ---
 def cleanup_old_caches():
     today_str = datetime.now().strftime('%Y-%m-%d')
     # Use '.' to refer to the current directory
@@ -21,24 +20,28 @@ def cleanup_old_caches():
             except OSError as e: 
                 print(f"Error removing old cache file {filename}: {e}")
 
-# --- 3. CREATE AND PRE-LOAD THE MEALFINDER ENGINE ---
-# We do this once when the server starts
+# --- 3. CREATE ENGINE AND START BACKGROUND LOADING ---
 cleanup_old_caches()
 print("Initializing MealFinder engine...")
 meal_finder_engine = MealFinder()
-print("Loading all menu data on startup. This may take a moment...")
-meal_finder_engine._load_all_menu_data() # Load data once on start
-print("Data loaded. Server is ready. 🚀")
 
-# --- ADD THIS LINE ---
-# Start the background thread to pre-load AI suggestions
-meal_finder_engine.start_ai_suggestion_preloader()
-# ---------------------
+# --- MODIFICATION ---
+# Start all data loading (Menus + AI) in background threads
+# This allows the Flask server to start immediately.
+print("Starting background data loaders...")
+meal_finder_engine.start_background_loaders()
+print("Flask server starting up... 🚀")
+# --- END MODIFICATION ---
+
 
 # --- 4. CREATE THE API ENDPOINT FOR FINDING MEALS ---
-# This function will be called by your JavaScript frontend
 @app.route("/api/find_meal", methods=["POST"])
 def api_find_meal():
+    # --- ADDED CHECK ---
+    # 503 Service Unavailable
+    if not meal_finder_engine.data_loaded:
+        return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
+    
     try:
         # Get all the user inputs from the web request's JSON body
         data = request.json
@@ -65,6 +68,10 @@ def api_find_meal():
 # --- 5. CREATE THE API ENDPOINT FOR TOP PROTEIN FOODS ---
 @app.route("/api/top_foods", methods=["GET"])
 def api_get_top_foods():
+    # --- ADDED CHECK ---
+    if not meal_finder_engine.data_loaded:
+        return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
+        
     try:
         top_foods = meal_finder_engine.get_top_protein_foods()
         return jsonify(top_foods)
@@ -75,6 +82,11 @@ def api_get_top_foods():
 # --- 5b. CREATE THE API ENDPOINT FOR AI SUGGESTION ---
 @app.route("/api/suggest_meal", methods=["POST"])
 def api_suggest_meal():
+    # --- MODIFIED CHECK ---
+    # First, check if the base menu data is loaded
+    if not meal_finder_engine.data_loaded:
+        return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
+
     try:
         data = request.json
         court = data.get('court')
@@ -83,8 +95,14 @@ def api_suggest_meal():
         if not court or not meal:
             return jsonify({"error": "Court and meal period are required."}), 400
             
-        # This function now uses the cache!
         suggestion = meal_finder_engine.get_ai_suggestion(court, meal)
+        
+        # --- ADDED CHECK FOR "LOADING" ---
+        # The cache might not be warm yet, but the data is loaded
+        # Check if the suggestion is a "loading" placeholder
+        if isinstance(suggestion, dict) and suggestion.get("status") == "loading":
+            return jsonify({"error": "AI suggestions are still being pre-loaded. Please try again in a moment."}), 503
+            
         return jsonify(suggestion)
         
     except Exception as e:
