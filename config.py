@@ -47,3 +47,6 @@ class Config:
     RATE_LIMIT_PER_DAY = 200
     RATE_LIMIT_PER_HOUR = 50
     RATE_LIMIT_PER_MINUTE = 20
+
+    AI_PRELOAD_ENABLED = True  # Allow preloading when possible
+    AI_PRELOAD_ON_STARTUP = False  # Don't preload on startup (on-demand)
