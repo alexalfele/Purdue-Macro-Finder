@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Find the perfect meal at Purdue dining courts based on your macro targets">
     <title>Purdue Macro Finder</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
     <style>
         /* --- 1. CSS VARIABLES & RESET --- */
         :root {
@@ -374,6 +377,15 @@
             color: var(--purdue-gold);
             margin-bottom: 1.5rem;
         }
+        
+        .card h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
 
         .explanation-card {
             background-color: #3f462a;
@@ -494,7 +506,6 @@
             outline-offset: 2px;
         }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <header class="header">
@@ -502,10 +513,8 @@
     </header>
 
     <div class="app-container">
-        <!-- CONTROLS PANEL -->
         <div class="controls-panel">
             
-            <!-- Tab Buttons -->
             <div class="tab-buttons" role="tablist" aria-label="Meal finding methods">
                 <button class="tab-button active" data-tab="ai" role="tab" aria-selected="true" aria-controls="ai">
                     AI Suggestion
@@ -515,36 +524,38 @@
                 </button>
             </div>
 
-            <!-- AI TAB -->
             <div id="ai" class="tab-content active" role="tabpanel" aria-labelledby="ai-tab">
                 <form id="ai-form">
                     <div class="card">
                         <h2 class="form-header">Get an AI Meal</h2>
                         
-                        <label for="ai-court">Dining Court</label>
-                        <select id="ai-court" name="ai-court" aria-label="Select dining court">
-                            <option value="Wiley">Wiley</option>
-                            <option value="Earhart">Earhart</option>
-                            <option value="Windsor">Windsor</option>
-                            <option value="Ford">Ford</option>
-                            <option value="Hillenbrand">Hillenbrand</option>
-                        </select>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="ai-court">Dining Court</label>
+                            <select id="ai-court" name="ai-court" aria-label="Select dining court">
+                                <option value="Wiley">Wiley</option>
+                                <option value="Earhart">Earhart</option>
+                                <option value="Windsor">Windsor</option>
+                                <option value="Ford">Ford</option>
+                                <option value="Hillenbrand">Hillenbrand</option>
+                            </select>
+                        </div>
                         
-                        <label for="ai-meal">Meal Period</label>
-                        <select id="ai-meal" name="ai-meal" aria-label="Select meal period">
-                            <option value="Breakfast">Breakfast</option>
-                            <option value="Lunch" selected>Lunch</option>
-                            <option value="Dinner">Dinner</option>
-                        </select>
+                        <div>
+                            <label for="ai-meal">Meal Period</label>
+                            <select id="ai-meal" name="ai-meal" aria-label="Select meal period">
+                                <option value="Breakfast">Breakfast</option>
+                                <option value="Lunch" selected>Lunch</option>
+                                <option value="Dinner">Dinner</option>
+                                <option value="Late Night">Late Night</option>
+                            </select>
+                        </div>
                     </div>
                 </form>
             </div>
 
-            <!-- MANUAL TAB -->
             <div id="manual" class="tab-content" role="tabpanel" aria-labelledby="manual-tab">
                 <form id="manual-form">
                     
-                    <!-- Target Macros -->
                     <details class="collapsible-card" open>
                         <summary>Target Macros</summary>
                         <div class="macro-grid">
@@ -563,7 +574,6 @@
                         </div>
                     </details>
                     
-                    <!-- Dietary Filters -->
                     <details class="collapsible-card" open>
                         <summary>Dietary Filters</summary>
                         <div class="filters">
@@ -582,7 +592,6 @@
                         </div>
                     </details>
 
-                    <!-- Meal Periods -->
                     <details class="collapsible-card">
                         <summary>Meal Periods</summary>
                         <div class="filters">
@@ -607,9 +616,8 @@
                 </form>
             </div>
 
-            <!-- CTA Footer -->
             <div class="cta-footer">
-                <button id="generate-button" class="cta-button" aria-label="Generate meal plan">
+                <button id="generate-button" class.cta-button" aria-label="Generate meal plan">
                     Generate My Meal Plan 🍽️
                 </button>
                 <button id="reset-button" aria-label="Clear all inputs and results">
@@ -620,32 +628,26 @@
 
         </div>
 
-        <!-- RESULTS PANEL -->
         <div class="results-panel">
             
-            <!-- Placeholder -->
             <div id="results-placeholder">
                 <h3>Your Meal Awaits</h3>
                 <p>Your meal recommendation will appear here.</p>
             </div>
 
-            <!-- Loading Spinner -->
             <div id="loading-spinner" class="hidden" role="status" aria-live="polite">
                 <div class="spinner"></div>
                 <p>Finding your meal...</p>
             </div>
 
-            <!-- Results Content -->
             <div id="results-content" class="hidden">
                 <h2 id="result-header">Your Meal Plan</h2>
                 
-                <!-- AI Explanation Card -->
                 <div id="ai-explanation" class="card explanation-card hidden">
                     <h3>Why this meal?</h3>
                     <p id="ai-explanation-text"></p>
                 </div>
                 
-                <!-- Macro Breakdown Chart -->
                 <div class="card">
                     <h3>Macro Breakdown</h3>
                     <div class="chart-container">
@@ -653,12 +655,10 @@
                     </div>
                 </div>
 
-                <!-- Meal Items -->
                 <div class="card">
                     <h3>Items</h3>
                     <div id="meal-plan-items" role="list">
-                        <!-- Items will be dynamically inserted here -->
-                    </div>
+                        </div>
                 </div>
             </div>
         </div>
@@ -668,27 +668,41 @@
         document.addEventListener('DOMContentLoaded', () => {
             // --- 1. CONFIGURATION ---
             const API_BASE_URL = "https://purdue-macro-finder.onrender.com";
-            const RETRY_DELAY = 5000;
+            const RETRY_DELAY = 5000; // 5 seconds
             const MAX_RETRIES = 3;
             
             // --- 2. GET REFERENCES TO HTML ELEMENTS ---
+            
+            // Tabs
             const tabButtons = document.querySelectorAll('.tab-button');
             const tabContents = document.querySelectorAll('.tab-content');
+            
+            // Forms
             const aiForm = document.getElementById('ai-form');
             const manualForm = document.getElementById('manual-form');
+            
+            // AI Form Inputs
             const aiCourt = document.getElementById('ai-court');
             const aiMeal = document.getElementById('ai-meal');
+            
+            // Manual Form Inputs
             const targetProtein = document.getElementById('target-protein');
             const targetCarbs = document.getElementById('target-carbs');
             const targetFat = document.getElementById('target-fat');
             const filterCheckboxes = document.querySelectorAll('.filters input[data-filter]');
             const mealPeriodCheckboxes = document.querySelectorAll('input[name="meal_period"]');
+
+            // Buttons & Status
             const generateButton = document.getElementById('generate-button');
             const resetButton = document.getElementById('reset-button');
             const statusLabel = document.getElementById('status-label');
+            
+            // Results Panel
             const resultsPlaceholder = document.getElementById('results-placeholder');
             const loadingSpinner = document.getElementById('loading-spinner');
             const resultsContent = document.getElementById('results-content');
+            
+            // Result Content Parts
             const resultHeader = document.getElementById('result-header');
             const aiExplanation = document.getElementById('ai-explanation');
             const aiExplanationText = document.getElementById('ai-explanation-text');
@@ -702,6 +716,7 @@
             let retryCount = 0;
 
             // --- 4. UTILITY FUNCTIONS ---
+            
             function debounce(func, wait) {
                 let timeout;
                 return function executedFunction(...args) {
@@ -726,21 +741,23 @@
             }
 
             // --- 5. INPUT VALIDATION ---
+            
             const validateInputs = debounce(() => {
                 if (activeTab === 'manual') {
                     const protein = parseInt(targetProtein.value) || 0;
                     const carbs = parseInt(targetCarbs.value) || 0;
                     const fat = parseInt(targetFat.value) || 0;
                     
+                    // Check for warnings
                     if (protein > 100) {
                         statusLabel.textContent = '⚠️ High protein target';
-                        statusLabel.style.color = '#fbbf24';
+                        statusLabel.style.color = '#fbbf24'; // yellow
                     } else if (protein === 0 && carbs === 0 && fat === 0) {
                         statusLabel.textContent = 'Set your macro targets';
-                        statusLabel.style.color = '#a1a1aa';
+                        statusLabel.style.color = '#a1a1aa'; // default
                     } else {
                         statusLabel.textContent = 'Ready to generate';
-                        statusLabel.style.color = '#a1a1aa';
+                        statusLabel.style.color = '#a1a1aa'; // default
                     }
                 }
             }, 500);
@@ -750,6 +767,8 @@
             targetFat.addEventListener('input', validateInputs);
 
             // --- 6. EVENT LISTENERS ---
+
+            // Tab switching
             tabButtons.forEach(button => {
                 button.addEventListener('click', () => {
                     activeTab = button.dataset.tab;
@@ -757,7 +776,9 @@
                 });
             });
 
+            // Main "Generate" button
             generateButton.addEventListener('click', () => {
+                // Clear any pending retries
                 if (currentRetryTimeout) {
                     clearTimeout(currentRetryTimeout);
                     currentRetryTimeout = null;
@@ -771,14 +792,17 @@
                 }
             });
             
+            // Reset button
             resetButton.addEventListener('click', () => {
                 aiForm.reset();
                 manualForm.reset();
                 
+                // Re-check default meal periods
                 mealPeriodCheckboxes.forEach(cb => {
                     cb.checked = (cb.value === 'Lunch' || cb.value === 'Dinner');
                 });
                 
+                // Destroy chart if exists
                 if (macroChart) {
                     macroChart.destroy();
                     macroChart = null;
@@ -789,6 +813,7 @@
                 statusLabel.style.color = '#a1a1aa';
             });
 
+            // Keyboard shortcuts
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !generateButton.disabled && 
                     document.activeElement.tagName !== 'INPUT') {
@@ -800,6 +825,7 @@
             });
 
             // --- 7. CORE API FUNCTIONS ---
+
             async function handleAiSuggestion() {
                 const payload = {
                     court: aiCourt.value,
@@ -818,6 +844,7 @@
             }
 
             async function handleManualSearch() {
+                // Validate inputs
                 const protein = parseInt(targetProtein.value) || 0;
                 const carbs = parseInt(targetCarbs.value) || 0;
                 const fat = parseInt(targetFat.value) || 0;
@@ -828,6 +855,7 @@
                     return;
                 }
                 
+                // Get selected meal periods
                 const selectedMeals = [];
                 mealPeriodCheckboxes.forEach(cb => {
                     if (cb.checked) {
@@ -840,6 +868,7 @@
                     return;
                 }
 
+                // Get dietary filters
                 const selectedFilters = {};
                 filterCheckboxes.forEach(cb => {
                     if (cb.checked) {
@@ -871,7 +900,7 @@
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify(payload),
-                        signal: AbortSignal.timeout(30000)
+                        signal: AbortSignal.timeout(30000) // 30 second timeout
                     });
 
                     const data = await response.json();
@@ -901,6 +930,7 @@
             }
 
             // --- 8. UI/DOM HELPER FUNCTIONS ---
+
             function setActiveTab(tabName) {
                 tabButtons.forEach(btn => {
                     btn.classList.toggle('active', btn.dataset.tab === tabName);
@@ -908,4 +938,187 @@
                 tabContents.forEach(content => {
                     content.classList.toggle('active', content.id === tabName);
                 });
-                status
+                statusLabel.textContent = `Switched to ${tabName.toUpperCase()} tab.`;
+                statusLabel.style.color = '#a1a1aa';
+            }
+
+            function showLoadingState(message) {
+                generateButton.disabled = true;
+                generateButton.innerHTML = '<span class="spinner-inline"></span> Finding...';
+                statusLabel.textContent = message;
+                statusLabel.style.color = '#a1a1aa';
+                
+                resultsPlaceholder.classList.add('hidden');
+                resultsContent.classList.add('hidden');
+                loadingSpinner.classList.remove('hidden');
+            }
+
+            function showPlaceholder(message) {
+                statusLabel.textContent = message;
+                statusLabel.style.color = '#a1a1aa';
+                resultsPlaceholder.classList.remove('hidden');
+                resultsContent.classList.add('hidden');
+                loadingSpinner.classList.add('hidden');
+                generateButton.disabled = false;
+                generateButton.innerHTML = 'Generate My Meal Plan 🍽️';
+            }
+            
+            function handleApiError(error) {
+                // Handle rate limiting
+                if (error.message === '429:rate_limit') {
+                    showPlaceholder('⚠️ Too many requests. Please wait a minute and try again.');
+                    generateButton.disabled = true;
+                    setTimeout(() => {
+                        generateButton.disabled = false;
+                    }, 60000); // Re-enable after 1 minute
+                    return;
+                }
+                
+                // Handle 503 retry logic
+                if (error.message === '503:still_loading') {
+                    if (retryCount < MAX_RETRIES) {
+                        retryCount++;
+                        statusLabel.textContent = `Server is waking up... Retry ${retryCount}/${MAX_RETRIES} in 5s`;
+                        statusLabel.style.color = '#fbbf24'; // yellow
+                        
+                        currentRetryTimeout = setTimeout(() => {
+                            generateButton.click();
+                        }, RETRY_DELAY);
+                        return;
+                    } else {
+                        showPlaceholder('Server is taking too long to respond. Please try again later.');
+                        return;
+                    }
+                }
+                
+                // Show normal error
+                showPlaceholder(`Error: ${error.message}`);
+                statusLabel.style.color = '#ef4444'; // red
+            }
+
+            function displayResult(result, isAiResult) {
+                statusLabel.textContent = `✅ Found a meal at ${result.court}!`;
+                statusLabel.style.color = '#22c55e'; // green
+                
+                // 1. Set Header
+                resultHeader.textContent = isAiResult 
+                    ? `AI Suggestion: ${result.meal_name}` 
+                    : `Your Meal Plan: ${result.meal_name}`;
+                
+                // 2. Show/Hide AI Explanation Card
+                if (isAiResult && result.explanation) {
+                    aiExplanationText.textContent = result.explanation;
+                    aiExplanation.classList.remove('hidden');
+                } else {
+                    aiExplanation.classList.add('hidden');
+                }
+                
+                // 3. Update Chart
+                updateMacroChart(result.totals);
+                
+                // 4. Build Item Cards
+                mealPlanItems.innerHTML = '';
+                result.plan.forEach(item => {
+                    const card = document.createElement('div');
+                    card.className = 'item-card';
+                    
+                    // Add animation
+                    card.style.opacity = '0';
+                    card.style.transform = 'translateY(10px)';
+                    
+                    card.innerHTML = `
+                        <div class="item-info">
+                            <h4>${item.name}</h4>
+                            <p>${item.serving_size || ''}</p>
+                        </div>
+                        <div class="item-macros">
+                            <span class="p">P: ${(item.p || 0).toFixed(0)}g</span>
+                            <span class="c">C: ${(item.c || 0).toFixed(0)}g</span>
+                            <span class="f">F: ${(item.f || 0).toFixed(0)}g</span>
+                        </div>
+                    `;
+                    
+                    mealPlanItems.appendChild(card);
+                    
+                    // Trigger animation
+                    setTimeout(() => {
+                        card.style.transition = 'all 0.3s ease';
+                        card.style.opacity = '1';
+                        card.style.transform = 'translateY(0)';
+                    }, 50);
+                });
+
+                // 5. Show results
+                resultsPlaceholder.classList.add('hidden');
+                loadingSpinner.classList.add('hidden');
+                resultsContent.classList.remove('hidden');
+                
+                generateButton.disabled = false;
+                generateButton.innerHTML = 'Generate My Meal Plan 🍽️';
+            }
+
+            function updateMacroChart(totals) {
+                const { p = 0, c = 0, f = 0 } = totals;
+                const calories = [p * 4, c * 4, f * 9];
+                const labels = [
+                    `Protein (${p.toFixed(0)}g)`, 
+                    `Carbs (${c.toFixed(0)}g)`, 
+                    `Fat (${f.toFixed(0)}g)`
+                ];
+
+                // Destroy existing chart
+                if (macroChart) {
+                    macroChart.destroy();
+                    macroChart = null;
+                }
+
+                macroChart = new Chart(chartCanvas, {
+                    type: 'pie',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: calories,
+                            backgroundColor: ['#6ee7b7', '#7dd3fc', '#fde047'],
+                            borderColor: '#3f3f46',
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        plugins: {
+                            legend: {
+                                labels: {
+                                    color: 'white',
+                                    font: { size: 12 }
+                                }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: (context) => {
+                                        let value = context.parsed;
+                                        let total = context.chart.getDatasetMeta(0).total;
+                                        let percentage = ((value / total)* 100).toFixed(0);
+                                        return `${context.label}: ${percentage}% of calories`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // --- 9. INITIALIZE ---
+            setActiveTab(activeTab);
+            showPlaceholder('Select a tab and generate a meal.');
+
+            // Add accessibility attributes
+            generateButton.setAttribute('aria-label', 'Generate meal plan');
+            loadingSpinner.setAttribute('role', 'status');
+            loadingSpinner.setAttribute('aria-live', 'polite');
+
+            console.log('Purdue Macro Finder initialized successfully!');
+        });
+    </script>
+</body>
+</html>
