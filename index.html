@@ -16,7 +16,7 @@
             --bg-primary: #18181b;
             --bg-secondary: #27272a;
             --bg-tertiary: #3f3f46;
-            --border-color: #52525b;
+            --border-color: #5252b;
             --text-primary: #f4f4f5;
             --text-secondary: #a1a1aa;
             --success: #22c55e;
@@ -194,7 +194,8 @@
         }
 
         input[type="number"],
-        select {
+        select,
+        textarea {
             width: 100%;
             padding: 0.75rem;
             background-color: #52525b;
@@ -203,18 +204,26 @@
             border-radius: 6px;
             font-size: 1rem;
             transition: all 0.2s ease;
+            font-family: inherit;
         }
 
         input[type="number"]:focus,
-        select:focus {
+        select:focus,
+        textarea:focus {
             outline: none;
             border-color: var(--purdue-gold);
             box-shadow: 0 0 0 3px rgba(207, 185, 145, 0.2);
         }
 
         input[type="number"]:hover,
-        select:hover {
+        select:hover,
+        textarea:hover {
             border-color: var(--purdue-gold);
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 80px;
         }
 
         .macro-grid {
@@ -517,7 +526,7 @@
             
             <div class="tab-buttons" role="tablist" aria-label="Meal finding methods">
                 <button class="tab-button active" data-tab="ai" role="tab" aria-selected="true" aria-controls="ai">
-                    AI Suggestion
+                    AI Goal
                 </button>
                 <button class="tab-button" data-tab="manual" role="tab" aria-selected="false" aria-controls="manual">
                     Manual Macros
@@ -527,28 +536,9 @@
             <div id="ai" class="tab-content active" role="tabpanel" aria-labelledby="ai-tab">
                 <form id="ai-form">
                     <div class="card">
-                        <h2 class="form-header">Get an AI Meal</h2>
-                        
-                        <div style="margin-bottom: 1rem;">
-                            <label for="ai-court">Dining Court</label>
-                            <select id="ai-court" name="ai-court" aria-label="Select dining court">
-                                <option value="Wiley">Wiley</option>
-                                <option value="Earhart">Earhart</option>
-                                <option value="Windsor">Windsor</option>
-                                <option value="Ford">Ford</option>
-                                <option value="Hillenbrand">Hillenbrand</option>
-                            </select>
-                        </div>
-                        
-                        <div>
-                            <label for="ai-meal">Meal Period</label>
-                            <select id="ai-meal" name="ai-meal" aria-label="Select meal period">
-                                <option value="Breakfast">Breakfast</option>
-                                <option value="Lunch" selected>Lunch</option>
-                                <option value="Dinner">Dinner</option>
-                                <option value="Late Night">Late Night</option>
-                            </select>
-                        </div>
+                        <h2 class="form-header">Find a Meal by Goal</h2>
+                        <label for="ai-goal">What's your goal for this meal?</label>
+                        <textarea id="ai-goal" name="ai-goal" placeholder="e.g., 'High protein for muscle gain', 'Low carb meal', 'Pre-workout energy'"></textarea>
                     </div>
                 </form>
             </div>
@@ -617,8 +607,8 @@
             </div>
 
             <div class="cta-footer">
-                <button id="generate-button" class.cta-button" aria-label="Generate meal plan">
-                    Generate My Meal Plan 🍽️
+                <button id="generate-button" class="cta-button" aria-label="Generate meal plan">
+                    Find My Meal 🍽️
                 </button>
                 <button id="reset-button" aria-label="Clear all inputs and results">
                     Clear
@@ -641,10 +631,10 @@
             </div>
 
             <div id="results-content" class="hidden">
-                <h2 id="result-header">Your Meal Plan</h2>
+                <h2 id="result-header">Your Optimized Meal</h2>
                 
                 <div id="ai-explanation" class="card explanation-card hidden">
-                    <h3>Why this meal?</h3>
+                    <h3>AI Goal Interpretation</h3>
                     <p id="ai-explanation-text"></p>
                 </div>
                 
@@ -681,9 +671,8 @@
             const aiForm = document.getElementById('ai-form');
             const manualForm = document.getElementById('manual-form');
             
-            // AI Form Inputs
-            const aiCourt = document.getElementById('ai-court');
-            const aiMeal = document.getElementById('ai-meal');
+            // AI Form Inputs (UPDATED)
+            const aiGoal = document.getElementById('ai-goal');
             
             // Manual Form Inputs
             const targetProtein = document.getElementById('target-protein');
@@ -748,7 +737,6 @@
                     const carbs = parseInt(targetCarbs.value) || 0;
                     const fat = parseInt(targetFat.value) || 0;
                     
-                    // Check for warnings
                     if (protein > 100) {
                         statusLabel.textContent = '⚠️ High protein target';
                         statusLabel.style.color = '#fbbf24'; // yellow
@@ -759,12 +747,21 @@
                         statusLabel.textContent = 'Ready to generate';
                         statusLabel.style.color = '#a1a1aa'; // default
                     }
+                } else if (activeTab === 'ai') {
+                    if (aiGoal.value.trim().length < 5) {
+                        statusLabel.textContent = 'Describe your meal goal';
+                        statusLabel.style.color = '#a1a1aa';
+                    } else {
+                        statusLabel.textContent = 'Ready to generate';
+                        statusLabel.style.color = '#a1a1aa';
+                    }
                 }
             }, 500);
             
             targetProtein.addEventListener('input', validateInputs);
             targetCarbs.addEventListener('input', validateInputs);
             targetFat.addEventListener('input', validateInputs);
+            aiGoal.addEventListener('input', validateInputs);
 
             // --- 6. EVENT LISTENERS ---
 
@@ -773,6 +770,7 @@
                 button.addEventListener('click', () => {
                     activeTab = button.dataset.tab;
                     setActiveTab(activeTab);
+                    validateInputs(); // Update status label on tab switch
                 });
             });
 
@@ -816,7 +814,7 @@
             // Keyboard shortcuts
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter' && !generateButton.disabled && 
-                    document.activeElement.tagName !== 'INPUT') {
+                    (document.activeElement.tagName !== 'TEXTAREA' && document.activeElement.tagName !== 'INPUT')) {
                     generateButton.click();
                 }
                 if (e.key === 'Escape') {
@@ -826,17 +824,23 @@
 
             // --- 7. CORE API FUNCTIONS ---
 
+            // UPDATED to send "goal" string
             async function handleAiSuggestion() {
+                const goal = aiGoal.value.trim();
+                if (goal.length < 5) {
+                    showPlaceholder('Please describe your meal goal in a few words.');
+                    return;
+                }
+
                 const payload = {
-                    court: aiCourt.value,
-                    meal: aiMeal.value,
+                    goal: goal,
                 };
                 
-                showLoadingState('Asking AI for a smart suggestion...');
+                showLoadingState('Asking AI to set targets...');
                 
                 try {
                     const result = await makeApiCall('/api/suggest_meal', payload);
-                    displayResult(result, true);
+                    displayResult(result, true); // We'll re-use the 'isAiResult' flag
                     retryCount = 0;
                 } catch (error) {
                     handleApiError(error);
@@ -938,7 +942,9 @@
                 tabContents.forEach(content => {
                     content.classList.toggle('active', content.id === tabName);
                 });
-                statusLabel.textContent = `Switched to ${tabName.toUpperCase()} tab.`;
+                
+                const tabNameText = tabName === 'ai' ? 'AI Goal' : 'Manual Macros';
+                statusLabel.textContent = `Switched to ${tabNameText} tab.`;
                 statusLabel.style.color = '#a1a1aa';
             }
 
@@ -950,6 +956,7 @@
                 
                 resultsPlaceholder.classList.add('hidden');
                 resultsContent.classList.add('hidden');
+        
                 loadingSpinner.classList.remove('hidden');
             }
 
@@ -960,7 +967,7 @@
                 resultsContent.classList.add('hidden');
                 loadingSpinner.classList.add('hidden');
                 generateButton.disabled = false;
-                generateButton.innerHTML = 'Generate My Meal Plan 🍽️';
+                generateButton.innerHTML = 'Find My Meal 🍽️';
             }
             
             function handleApiError(error) {
@@ -997,17 +1004,16 @@
             }
 
             function displayResult(result, isAiResult) {
-                statusLabel.textContent = `✅ Found a meal at ${result.court}!`;
+                statusLabel.textContent = `✅ Found an optimized meal at ${result.court}!`;
                 statusLabel.style.color = '#22c55e'; // green
                 
                 // 1. Set Header
-                resultHeader.textContent = isAiResult 
-                    ? `AI Suggestion: ${result.meal_name}` 
-                    : `Your Meal Plan: ${result.meal_name}`;
+                resultHeader.textContent = `Your Optimized Meal`;
                 
                 // 2. Show/Hide AI Explanation Card
-                if (isAiResult && result.explanation) {
-                    aiExplanationText.textContent = result.explanation;
+                // We'll use the 'explanation' field from the AI *target* generation
+                if (isAiResult && result.ai_explanation) {
+                    aiExplanationText.textContent = result.ai_explanation;
                     aiExplanation.classList.remove('hidden');
                 } else {
                     aiExplanation.classList.add('hidden');
@@ -1054,7 +1060,7 @@
                 resultsContent.classList.remove('hidden');
                 
                 generateButton.disabled = false;
-                generateButton.innerHTML = 'Generate My Meal Plan 🍽️';
+                generateButton.innerHTML = 'Find My Meal 🍽️';
             }
 
             function updateMacroChart(totals) {
@@ -1110,8 +1116,8 @@
 
             // --- 9. INITIALIZE ---
             setActiveTab(activeTab);
-            showPlaceholder('Select a tab and generate a meal.');
-
+            validateInputs(); // Run once on load
+            
             // Add accessibility attributes
             generateButton.setAttribute('aria-label', 'Generate meal plan');
             loadingSpinner.setAttribute('role', 'status');
