@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from google import genai
 from config import Config
 
+# Use Flask's logger if available, or create a new one
 logger = logging.getLogger(__name__)
 
 class MealFinder:
@@ -44,7 +45,7 @@ class MealFinder:
         # Data storage
         self.master_item_list = []
         self.data_loaded = False
-        self.ai_suggestions_cache = {}
+        self.ai_suggestions_cache = {} # Will now store { "user goal string": {"p": 50, ...} }
         self.cache_lock = threading.Lock()
         
         # Performance indices
@@ -55,6 +56,10 @@ class MealFinder:
         self.api_key = os.environ.get("GEMINI_API_KEY")
         if not self.api_key:
             logger.warning("GEMINI_API_KEY not found. AI suggestions will be disabled.")
+        else:
+            genai.configure(api_key=self.api_key)
+            self.ai_model = genai.GenerativeModel(Config.GEMINI_MODEL)
+
 
     def _ensure_current_date(self):
         """Ensures all date-dependent variables are current."""
@@ -68,6 +73,8 @@ class MealFinder:
             self.data_loaded = False
             self.items_by_court.clear()
             self.items_by_meal.clear()
+            # Clear AI cache as well, as targets might be context-dependent (though unlikely)
+            self.ai_suggestions_cache.clear()
             return True
         return False
 
@@ -161,14 +168,12 @@ class MealFinder:
         Loads menu data for all dining courts, using multithreading for speed.
         Manages a daily cache to avoid excessive API calls.
         """
-        # Refresh date on every load
         current_date_str = datetime.now().strftime('%Y-%m-%d')
         
         if self.data_loaded and self.todays_date == current_date_str:
             logger.info(f"Menu data for {current_date_str} is already loaded.")
             return
         
-        # Update dates if stale
         if self.todays_date != current_date_str:
             self._ensure_current_date()
         
@@ -176,7 +181,6 @@ class MealFinder:
         
         cached_data, needs_to_save_cache = {}, False
         
-        # Load from cache if exists
         if os.path.exists(self.cache_file):
             try:
                 with open(self.cache_file, 'r') as f:
@@ -185,7 +189,6 @@ class MealFinder:
             except (json.JSONDecodeError, IOError) as e:
                 logger.error(f"Error loading cache file: {e}")
         
-        # Fetch data for all courts in parallel
         with ThreadPoolExecutor() as executor:
             future_to_court = {
                 executor.submit(self._get_menu_data_for_court, court, cached_data): court
@@ -198,7 +201,6 @@ class MealFinder:
                     cached_data[court] = menu_data
                     needs_to_save_cache = True
                 
-                # Parse menu data
                 if menu_data and 'data' in menu_data:
                     dining_court = menu_data.get('data', {}).get('diningCourtByName')
                     if dining_court and dining_court.get('dailyMenu'):
@@ -212,7 +214,6 @@ class MealFinder:
                                             'Total Carbohydrate': 0,
                                             'Total fat': 0
                                         }
-                                        
                                         serving_size = ""
                                         for fact in core_item['nutritionFacts']:
                                             if fact['name'] in macros:
@@ -222,7 +223,6 @@ class MealFinder:
                                             elif fact['name'] == 'Serving Size':
                                                 serving_size = fact.get('label', '')
                                         
-                                        # Only add items with nutritional data
                                         if sum(macros.values()) > 0:
                                             traits = [
                                                 trait['name']
@@ -241,7 +241,6 @@ class MealFinder:
                                                 "serving_size": serving_size
                                             })
         
-        # Save cache if updated
         if needs_to_save_cache:
             try:
                 with open(self.cache_file, 'w') as f:
@@ -253,279 +252,142 @@ class MealFinder:
             except IOError as e:
                 logger.error(f"Error saving cache file: {e}")
         
-        # Build performance indices
         self._build_indices()
-        
-        # Mark as loaded
         self.data_loaded = True
         logger.info(f"Menu data load complete. {len(self.master_item_list)} items loaded.")
 
-    def get_top_protein_foods(self, count=25):
-        """Returns the top protein-dense foods."""
-        unique_foods = {
-            (item['name'], item['p'], item['c'], item['f']): item
-            for item in self.master_item_list
-        }
-        
-        protein_dense_foods = []
-        for food in unique_foods.values():
-            calories = (food.get('p', 0) * 4) + (food.get('c', 0) * 4) + (food.get('f', 0) * 9)
-            if calories > 50 and food.get('p', 0) > 5:
-                protein_per_100kcal = (food.get('p', 0) / calories) * 100
-                protein_dense_foods.append({
-                    **food,
-                    "calories": calories,
-                    "protein_density": protein_per_100kcal
-                })
-        
-        protein_dense_foods.sort(key=lambda x: x['protein_density'], reverse=True)
-        return protein_dense_foods[:count]
-
-    # --- AI SUGGESTION METHODS ---
+    # --- AI SUGGESTION METHODS (NEW) ---
 
     def _load_ai_cache_from_disk(self):
-        """Loads the AI suggestion cache from a JSON file."""
+        """Loads the AI *target* cache from a JSON file."""
         self._ensure_current_date()
         
         if os.path.exists(self.ai_cache_file):
-            logger.info(f"Loading AI cache from {self.ai_cache_file}")
+            logger.info(f"Loading AI target cache from {self.ai_cache_file}")
             try:
                 with open(self.ai_cache_file, 'r') as f:
+                    # The cache file just stores { "goal string": { "p": ... } }
                     data_from_disk = json.load(f)
-                    
                     with self.cache_lock:
-                        # Convert string keys "Court|Meal" back to tuples
-                        self.ai_suggestions_cache = {}
-                        for k, v in data_from_disk.items():
-                            try:
-                                court, meal = k.split('|')
-                                self.ai_suggestions_cache[(court, meal)] = v
-                            except ValueError:
-                                logger.warning(f"Skipping malformed cache key: {k}")
-                                
-                    logger.info(f"Loaded {len(self.ai_suggestions_cache)} AI suggestions")
+                        self.ai_suggestions_cache = data_from_disk
+                    logger.info(f"Loaded {len(self.ai_suggestions_cache)} cached AI targets")
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error(f"Failed to read AI cache: {e}")
                 self.ai_suggestions_cache = {}
 
     def _save_ai_cache_to_disk(self):
-        """Saves the current AI suggestion cache to a JSON file."""
+        """Saves the current AI *target* cache to a JSON file."""
         try:
-            data_to_save = {}
             with self.cache_lock:
-                # Convert tuple keys (Court, Meal) to simple string "Court|Meal"
-                for k, v in self.ai_suggestions_cache.items():
-                    if isinstance(k, tuple) and len(k) == 2:
-                        string_key = f"{k[0]}|{k[1]}"
-                        data_to_save[string_key] = v
+                # The cache is already in a simple { "goal": { ... } } format
+                data_to_save = self.ai_suggestions_cache
             
             with open(self.ai_cache_file, 'w') as f:
                 json.dump(data_to_save, f)
             
-            logger.debug(f"Saved {len(data_to_save)} AI suggestions to cache")
+            logger.debug(f"Saved {len(data_to_save)} AI targets to cache")
         except Exception as e:
             logger.error(f"Error saving AI cache: {e}")
 
-    def _fetch_ai_suggestion_from_api(self, court_name, meal_name, is_retry=False):
-        """Calls the Gemini API to generate a meal suggestion."""
+    def _get_macros_from_ai_api(self, user_goal, is_retry=False):
+        """Calls the Gemini API to convert a goal string into macro targets."""
         if not self.api_key:
             return {"error": "AI service is not configured."}
         
-        # Get available items using index for better performance
-        available_items = [
-            item for item in self.master_item_list
-            if item['court'] == court_name and item['meal_name'] == meal_name
-        ]
-        
-        if not available_items:
-            return {"error": f"No items found for {court_name} at {meal_name}."}
-        
-        # Build food list string
-        food_list_str = "\n".join([
-            f"- {item['name']} (P:{item.get('p', 0)}g, C:{item.get('c', 0)}g, F:{item.get('f', 0)}g)"
-            for item in available_items
-        ])
-        
         prompt = f"""
-You are a Purdue University dining hall nutritionist. 
-Your goal is to help a student pick a balanced, healthy, and protein-rich meal
-from the {court_name} dining court for {meal_name}.
+You are a sports nutritionist. A student at Purdue University needs to find a meal.
+Their goal is: "{user_goal}"
 
-Here is the full list of available foods:
-{food_list_str}
+Your job is to convert this goal into a set of macro targets (protein, carbs, fat) for a single meal.
 
-Please select 3-5 items that make a healthy, balanced meal. 
-Prioritize a lean protein, a vegetable or fruit, and a whole-grain carb.
+- Prioritize protein for all muscle gain or "high protein" requests (40-60g).
+- Keep fat low (10-20g) unless they specifically ask for a keto or high-fat meal.
+- "Pre-workout" should have high carbs (50-80g).
+- "Post-workout" should have high protein (40-50g) and high carbs (50-70g).
+- "Fat loss" or "low-carb" should have high protein (30-50g) and low carbs (10-30g).
+- A "balanced" meal should be around 30p, 50c, 15f.
 
-Return your answer as ONLY a valid JSON object with two keys:
-1. "foods": A JSON list of the exact food names.
-2. "explanation": A brief 1-2 sentence reason for why this meal is a good choice.
+Return ONLY a valid JSON object with three keys: "p", "c", "f", and a short "explanation".
 
-Example:
+Example 1:
+User Goal: "High protein meal for muscle gain"
+Your Response:
 {{
-  "foods": ["Grilled Chicken Breast", "Steamed Broccoli", "Brown Rice"],
-  "explanation": "This meal provides lean protein from the chicken, fiber and vitamins from the broccoli, and complex carbs from the brown rice for sustained energy."
+  "p": 50,
+  "c": 40,
+  "f": 15,
+  "explanation": "Set a high protein target for muscle repair and balanced carbs/fats."
+}}
+
+Example 2:
+User Goal: "a light, low-carb meal"
+Your Response:
+{{
+  "p": 30,
+  "c": 20,
+  "f": 10,
+  "explanation": "Set moderate protein with low carbs and fat for a light meal."
 }}
 """
         
         try:
-            # --- UPDATED API CALL ---
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(Config.GEMINI_MODEL)
-            response = model.generate_content(prompt)
-            # --- END OF UPDATE ---
+            response = self.ai_model.generate_content(prompt)
             
-            # Parse response
-            # Added guard for "json" markers
             clean_response = response.text.strip().lstrip("```json").rstrip("```")
-            
             ai_data = json.loads(clean_response)
             
-            suggested_names = ai_data.get("foods", [])
-            explanation = ai_data.get("explanation", "No explanation provided by AI.")
-            
-            if not suggested_names:
-                return {"error": "AI could not find a valid combination."}
-            
-            # Build suggestion from available items
-            suggestion = []
-            totals_map = {'p': 0, 'c': 0, 'f': 0}
-            
-            for name in suggested_names:
-                # Find the item in the list
-                found_item = next((item for item in available_items if item['name'] == name), None)
+            # Validate the AI's output
+            if 'p' not in ai_data or 'c' not in ai_data or 'f' not in ai_data:
+                raise ValueError("AI response missing required p, c, or f keys.")
                 
-                if found_item:
-                    suggestion.append(found_item)
-                    totals_map['p'] += found_item.get('p', 0)
-                    totals_map['c'] += found_item.get('c', 0)
-                    totals_map['f'] += found_item.get('f', 0)
-            
-            if not suggestion:
-                # This can happen if the AI hallucinates a food name
-                logger.warning(f"AI for {court_name}/{meal_name} suggested foods not on the menu: {suggested_names}")
-                return {"error": "AI suggested foods that are not available."}
-            
-            totals_map['calories'] = (
-                (totals_map['p'] * 4) +
-                (totals_map['c'] * 4) +
-                (totals_map['f'] * 9)
-            )
-            
-            return {
-                "plan": suggestion,
-                "totals": totals_map,
-                "court": court_name,
-                "meal_name": meal_name,
-                "explanation": explanation
+            targets = {
+                "p": int(ai_data['p']),
+                "c": int(ai_data['c']),
+                "f": int(ai_data['f'])
             }
+            
+            explanation = ai_data.get("explanation", "AI analyzed your goal.")
+            
+            return { "targets": targets, "explanation": explanation }
         
         except Exception as e:
-            # Handle rate limiting with retry
             if "429" in str(e) and not is_retry:
-                logger.warning(f"Rate limit hit for {court_name}/{meal_name}, retrying...")
+                logger.warning(f"Rate limit hit for AI goal: '{user_goal}', retrying...")
                 delay = random.randint(Config.RETRY_DELAY_MIN, Config.RETRY_DELAY_MAX)
                 time.sleep(delay)
-                return self._fetch_ai_suggestion_from_api(court_name, meal_name, is_retry=True)
+                return self._get_macros_from_ai_api(user_goal, is_retry=True)
             
-            logger.error(f"Gemini API error for {court_name}/{meal_name}: {e}")
-            logger.error(f"Failed prompt: {prompt}")
+            logger.error(f"Gemini API error for goal '{user_goal}': {e}")
             if "response" in locals():
                 logger.error(f"Raw AI Response: {response.text}")
-            return {"error": "The AI suggestion failed. Try again."}
+            return {"error": "The AI failed to interpret your goal. Try rephrasing."}
 
-    def get_ai_suggestion(self, court_name, meal_name):
-        """Gets an AI suggestion, checking cache first."""
-        # Ensure data is current
+    def get_macros_from_ai(self, user_goal):
+        """Gets macro targets for a user goal, checking cache first."""
         if self._ensure_current_date():
             self._load_all_menu_data()
-            # Wait for load
             while not self.data_loaded:
                 time.sleep(0.5)
         
-        cache_key = (court_name, meal_name)
+        # Normalize the goal string for better cache hits
+        cache_key = user_goal.strip().lower()
         
-        # --- ADDED LOCK FOR THREAD-SAFE READ ---
         with self.cache_lock:
-            # Check cache
             if cache_key in self.ai_suggestions_cache:
+                logger.info(f"AI target cache HIT for: '{user_goal}'")
                 return self.ai_suggestions_cache[cache_key]
-        # --- END OF UPDATE ---
         
-        # Generate on-demand
-        logger.info(f"Cache miss for {court_name}/{meal_name}, generating...")
-        suggestion = self._fetch_ai_suggestion_from_api(court_name, meal_name)
+        # Cache miss, call the API
+        logger.info(f"AI target cache MISS for: '{user_goal}'. Calling API...")
+        result = self._get_macros_from_ai_api(user_goal)
         
-        # Update cache
-        with self.cache_lock:
-            self.ai_suggestions_cache[cache_key] = suggestion
+        # Update cache if successful
+        if "error" not in result:
+            with self.cache_lock:
+                self.ai_suggestions_cache[cache_key] = result
+            self._save_ai_cache_to_disk()
         
-        self._save_ai_cache_to_disk()
-        
-        return suggestion
-
-    def _background_preloader_task(self):
-        """Loads AI cache and generates missing suggestions in parallel."""
-        # Wait for menu data
-        if not self.data_loaded:
-            logger.info("AI Preloader: Waiting for menu data...")
-            while not self.data_loaded:
-                time.sleep(1)
-        
-        # Check for stale data
-        if self._ensure_current_date():
-            self._load_all_menu_data()
-            while not self.data_loaded:
-                time.sleep(1)
-        
-        logger.info("AI Preloader: Loading cache...")
-        self._load_ai_cache_from_disk()
-        
-        # Find all unique (court, meal) combinations
-        jobs_set = set()
-        for item in self.master_item_list:
-            jobs_set.add((item['court'], item['meal_name']))
-        
-        # Find missing jobs
-        missing_jobs = []
-        with self.cache_lock:
-            for job in jobs_set:
-                if job not in self.ai_suggestions_cache:
-                    missing_jobs.append(job)
-        
-        if not missing_jobs:
-            logger.info(f"AI cache is warm. All {len(jobs_set)} suggestions loaded.")
-            return
-        
-        logger.info(f"AI Preloader: {len(missing_jobs)} missing. Starting generation...")
-        
-        # Mark as loading
-        with self.cache_lock:
-            for court, meal in missing_jobs:
-                self.ai_suggestions_cache[(court, meal)] = {"status": "loading"}
-        
-        # Worker function
-        def _preload_worker(job):
-            court, meal = job
-            cache_key = (court, meal)
-            try:
-                suggestion = self._fetch_ai_suggestion_from_api(court, meal)
-                with self.cache_lock:
-                    self.ai_suggestions_cache[cache_key] = suggestion
-            except Exception as e:
-                logger.error(f"Error pre-loading {court}/{meal}: {e}")
-                with self.cache_lock:
-                    self.ai_suggestions_cache[cache_key] = {
-                        "error": "Failed to pre-load suggestion."
-                    }
-        
-        # Generate in parallel with limited workers
-        with ThreadPoolExecutor(max_workers=Config.AI_MAX_WORKERS) as executor:
-            executor.map(_preload_worker, missing_jobs)
-        
-        # Save to disk
-        self._save_ai_cache_to_disk()
-        logger.info(f"AI Preloader: {len(missing_jobs)} new suggestions generated.")
+        return result
 
     def start_background_loaders(self):
         """Starts background threads for menu and AI loading."""
@@ -539,19 +401,16 @@ Example:
         )
         menu_loader_thread.start()
         
-        # Thread 2: Load AI suggestions (ONLY if enabled)
-        if Config.AI_PRELOAD_ON_STARTUP:
-            logger.info("AI preloading is ENABLED. Warming cache...")
-            ai_loader_thread = threading.Thread(
-                target=self._background_preloader_task,
-                daemon=True,
-                name="AIPreloader"
-            )
-            ai_loader_thread.start()
-        else:
-            logger.info("AI preloading is DISABLED. Suggestions will be on-demand.")
-            # Load any existing suggestions from disk
-            self._load_ai_cache_from_disk()
+        # Thread 2: Load existing AI target cache from disk
+        # We no longer pre-load, just load what's already saved.
+        ai_cache_loader_thread = threading.Thread(
+            target=self._load_ai_cache_from_disk,
+            daemon=True,
+            name="AICacheLoader"
+        )
+        ai_cache_loader_thread.start()
+        logger.info("AI target cache loader started (on-demand mode).")
+
 
     # --- MEAL FINDING ALGORITHM ---
 
@@ -565,8 +424,10 @@ Example:
         cooling_rate = Config.COOLING_RATE
         iterations = Config.ITERATIONS
         
-        # Start with random solution
         initial_size = min(Config.INITIAL_ITEMS, len(available_items))
+        if not available_items or len(available_items) < initial_size:
+            return None, float('inf'), {} # Not enough items
+            
         current_solution = random.sample(available_items, initial_size)
         
         for _ in range(iterations):
@@ -575,7 +436,6 @@ Example:
             
             neighbor = list(current_solution)
             
-            # Random action: swap, add, or remove
             action = random.choice(['swap', 'add', 'remove'])
             
             if action == 'swap' and len(neighbor) > 1:
@@ -589,15 +449,12 @@ Example:
             elif action == 'remove' and len(neighbor) > Config.MIN_ITEMS:
                 neighbor.pop(random.randrange(len(neighbor)))
             
-            # Calculate scores
             current_score, _ = self._calculate_score(current_solution, targets, weights, penalties)
             neighbor_score, neighbor_totals = self._calculate_score(neighbor, targets, weights, penalties)
             
-            # Accept or reject
             if neighbor_score < current_score or random.random() < math.exp((current_score - neighbor_score) / temp):
                 current_solution = neighbor
             
-            # Update best
             if neighbor_score < best_score:
                 best_score = neighbor_score
                 best_totals = neighbor_totals
@@ -614,14 +471,13 @@ Example:
         if dietary_filters is None:
             dietary_filters = {}
         
-        # Ensure data is current
         if self._ensure_current_date():
             self._load_all_menu_data()
         
         if not self.data_loaded:
+            logger.warning("find_best_meal called before data was loaded.")
             return None
         
-        # Apply dietary filters
         filtered_master_list = []
         for item in self.master_item_list:
             traits = item.get('traits', [])
@@ -637,20 +493,19 @@ Example:
             if passes_filter:
                 filtered_master_list.append(item)
         
-        # Get available courts
         available_courts = set(
             item['court'] for item in filtered_master_list
             if item['name'] not in exclusion_list and item['meal_name'] in meal_periods_to_check
         )
         
         if not available_courts:
+            logger.warning(f"No courts available for filters/meals: {meal_periods_to_check}")
             return None
         
         overall_best_solution, overall_best_score = None, float('inf')
         weights = Config.WEIGHTS
         penalties = Config.PENALTIES
         
-        # Check each court
         for court in available_courts:
             court_specific_items = [
                 item for item in filtered_master_list
@@ -659,12 +514,10 @@ Example:
                    item['meal_name'] in meal_periods_to_check
             ]
             
-            # Run optimization
             court_solution, court_score, court_totals = self._run_optimization_for_court(
                 court_specific_items, targets, weights, penalties
             )
             
-            # Update best
             if court_solution and court_score < overall_best_score:
                 overall_best_score = court_score
                 overall_best_solution = {
