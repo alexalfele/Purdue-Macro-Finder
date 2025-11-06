@@ -1,21 +1,33 @@
 import os
 from datetime import datetime
 from flask import Flask, request, jsonify
-from flask_cors import CORS  # Import CORS
+from flask_cors import CORS
 from meal_finder_engine import MealFinder
 import threading
 import time 
 import re 
+import requests
 
 # --- 1. SETUP THE FLASK APP ---
-# This is now an API-only server. No static_folder.
 app = Flask(__name__)
-
-# --- FIX: Enable CORS for all domains ---
-# This allows your Netlify frontend to call your Render backend.
 CORS(app) 
 
-# --- 2. LAZY INITIALIZATION SETUP ---
+# --- 2. KEEP-ALIVE CONFIGURATION ---
+KEEP_ALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL", "")  # Render sets this automatically
+KEEP_ALIVE_INTERVAL = 840  # 14 minutes (Render free tier spins down after 15 min)
+
+def keep_alive_ping():
+    """Pings the server periodically to prevent spin-down"""
+    while True:
+        time.sleep(KEEP_ALIVE_INTERVAL)
+        if KEEP_ALIVE_URL:
+            try:
+                requests.get(f"{KEEP_ALIVE_URL}/", timeout=10)
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Keep-alive ping successful")
+            except Exception as e:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Keep-alive ping failed: {e}")
+
+# --- 3. LAZY INITIALIZATION SETUP ---
 meal_finder_engine = None
 engine_lock = threading.Lock()
 
@@ -55,15 +67,13 @@ def get_engine():
         
         return meal_finder_engine
 
-# --- 3. HEALTH CHECK ROUTE ---
-# Render and other services use this to see if your app is live.
+# --- 4. HEALTH CHECK ROUTE ---
 @app.route("/")
 def health_check():
     """A simple route to confirm the server is running."""
     return jsonify({"status": "healthy", "message": "Purdue Macro Finder API is running."})
 
-
-# --- 4. API ENDPOINTS ---
+# --- 5. API ENDPOINTS ---
 @app.route("/api/find_meal", methods=["POST"])
 def api_find_meal():
     engine = get_engine() 
@@ -121,10 +131,18 @@ def api_suggest_meal():
         print(f"Error in /api/suggest_meal: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 5. START THE SERVER ---
+# --- 6. START THE SERVER ---
 if __name__ == "__main__":
-    # Gunicorn (on Render) will use this file, but not run this block.
-    # This is for local testing only.
+    # Start keep-alive thread if URL is available
+    if KEEP_ALIVE_URL:
+        keep_alive_thread = threading.Thread(
+            target=keep_alive_ping,
+            daemon=True,
+            name="KeepAlive"
+        )
+        keep_alive_thread.start()
+        print(f"Keep-alive thread started (pinging every {KEEP_ALIVE_INTERVAL}s)")
+    
     print("Starting Flask development server...")
     get_engine() 
     app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
