@@ -907,8 +907,9 @@
                         signal: AbortSignal.timeout(30000) // 30 second timeout
                     });
 
-                    const data = await response.json();
-
+                    // --- START OF FIX ---
+                    
+                    // First, check if the response was successful.
                     if (!response.ok) {
                         if (response.status === 503) {
                             throw new Error('503:still_loading');
@@ -916,8 +917,25 @@
                         if (response.status === 429) {
                             throw new Error('429:rate_limit');
                         }
-                        throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+                        
+                        // Try to get the error text from the server
+                        const errorText = await response.text();
+                        
+                        // Try to parse it as JSON in case the server *did* send a JSON error
+                        try {
+                            const errorData = JSON.parse(errorText);
+                            throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+                        } catch (e) {
+                            // This is where the HTML error is caught.
+                            console.error("Server returned non-JSON error:", errorText);
+                            throw new Error(`Server returned an invalid HTML response (Status: ${response.status}). Check console for details.`);
+                        }
                     }
+                    
+                    // --- END OF FIX ---
+
+                    // If we get here, response.ok was true, so we can safely parse JSON.
+                    const data = await response.json();
                     
                     if (data.error) {
                         throw new Error(data.error);
