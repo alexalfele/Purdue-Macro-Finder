@@ -2,17 +2,33 @@ import os
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from meal_finder_engine import MealFinder
+from config import Config  # Import the Config class
 import threading
 import time 
-import re 
 import requests
 
 # --- 1. SETUP THE FLASK APP ---
 app = Flask(__name__)
 CORS(app) 
 
-# --- 2. KEEP-ALIVE CONFIGURATION ---
+# --- 2. CONFIGURE RATE LIMITING ---
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["100 per day", "20 per hour"], # Fallback
+    storage_uri="memory://",
+)
+
+# Apply limits from config.py
+# We create strings for flask-limiter from the config values
+limit_minute = f"{Config.RATE_LIMIT_PER_MINUTE} per minute"
+limit_hour = f"{Config.RATE_LIMIT_PER_HOUR} per hour"
+limit_day = f"{Config.RATE_LIMIT_PER_DAY} per day"
+
+# --- 3. KEEP-ALIVE CONFIGURATION ---
 KEEP_ALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 KEEP_ALIVE_INTERVAL = 840  # 14 minutes
 ENABLE_KEEP_ALIVE = os.environ.get("ENABLE_KEEP_ALIVE", "true").lower() == "true"
@@ -28,7 +44,7 @@ def keep_alive_ping():
             except Exception as e:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] Keep-alive ping failed: {e}")
 
-# --- 3. LAZY INITIALIZATION SETUP ---
+# --- 4. LAZY INITIALIZATION SETUP ---
 meal_finder_engine = None
 engine_lock = threading.Lock()
 
@@ -68,14 +84,47 @@ def get_engine():
         
         return meal_finder_engine
 
-# --- 4. HEALTH CHECK ROUTE ---
+# --- 5. INPUT VALIDATION FUNCTIONS (from your test file) ---
+
+def validate_targets(targets):
+    """Validates the macro targets dictionary."""
+    required_macros = ['p', 'c', 'f']
+    for macro in required_macros:
+        if macro not in targets:
+            return False, f"Missing required macro: {macro}"
+        
+        value = targets[macro]
+        try:
+            val = float(value)
+            if not Config.MIN_MACRO_TARGET <= val <= Config.MAX_MACRO_TARGET:
+                return False, f"Macro {macro} ({val}) is out of range. Must be between {Config.MIN_MACRO_TARGET} and {Config.MAX_MACRO_TARGET}."
+        except (ValueError, TypeError):
+            return False, f"Macro {macro} must be a valid number."
+            
+    return True, None
+
+def validate_meal_periods(meal_periods):
+    """Validates the list of meal periods."""
+    if not meal_periods or not isinstance(meal_periods, list):
+        return False, "Please select at least one meal period."
+    
+    for period in meal_periods:
+        if period not in Config.MEAL_PERIODS:
+            return False, f"Invalid meal period: {period}"
+            
+    return True, None
+
+# --- 6. HEALTH CHECK ROUTE ---
 @app.route("/")
 def health_check():
     """A simple route to confirm the server is running."""
     return jsonify({"status": "healthy", "message": "Purdue Macro Finder API is running."})
 
-# --- 5. API ENDPOINTS ---
+# --- 7. API ENDPOINTS ---
 @app.route("/api/find_meal", methods=["POST"])
+@limiter.limit(limit_minute) # Apply rate limits
+@limiter.limit(limit_hour)
+@limiter.limit(limit_day)
 def api_find_meal():
     engine = get_engine() 
     if not engine.data_loaded:
@@ -88,8 +137,14 @@ def api_find_meal():
         dietary_filters = data.get('dietary_filters', {})
         exclusion_list = data.get('exclusion_list', [])
 
-        if not meal_periods:
-            return jsonify({"error": "Please select at least one meal period."}), 400
+        # --- SERVER-SIDE VALIDATION ---
+        valid, error = validate_targets(targets)
+        if not valid:
+            return jsonify({"error": error}), 400
+            
+        valid, error = validate_meal_periods(meal_periods)
+        if not valid:
+            return jsonify({"error": error}), 400
 
         result = engine.find_best_meal(
             targets,
@@ -108,6 +163,9 @@ def api_find_meal():
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/suggest_meal", methods=["POST"])
+@limiter.limit(limit_minute) # Apply rate limits
+@limiter.limit(limit_hour)
+@limiter.limit(limit_day)
 def api_suggest_meal():
     engine = get_engine()
     if not engine.data_loaded:
@@ -120,19 +178,29 @@ def api_suggest_meal():
         
         if not court or not meal:
             return jsonify({"error": "Court and meal period are required."}), 400
+        
+        if meal not in Config.MEAL_PERIODS:
+            return jsonify({"error": f"Invalid meal period: {meal}"}), 400
+        
+        if court not in Config.DINING_COURTS:
+            return jsonify({"error": f"Invalid dining court: {court}"}), 400
             
         suggestion = engine.get_ai_suggestion(court, meal)
         
-        if isinstance(suggestion, dict) and suggestion.get("status") == "loading":
-            return jsonify({"error": "AI suggestions are still being pre-loaded. Please try again in a moment."}), 503
-            
+        if isinstance(suggestion, dict):
+            if suggestion.get("status") == "loading":
+                return jsonify({"error": "AI suggestions are still being pre-loaded. Please try again in a moment."}), 503
+            if suggestion.get("error"):
+                # Pass the error to the frontend with a 404
+                return jsonify({"error": suggestion.get("error")}), 404
+
         return jsonify(suggestion)
         
     except Exception as e:
         print(f"Error in /api/suggest_meal: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- 6. START THE SERVER ---
+# --- 8. START THE SERVER ---
 if __name__ == "__main__":
     # Start keep-alive thread if enabled and URL is available
     if ENABLE_KEEP_ALIVE and KEEP_ALIVE_URL:
@@ -148,4 +216,5 @@ if __name__ == "__main__":
     
     print("Starting Flask development server...")
     get_engine() 
-    app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
+    # Use 0.0.0.0 to be accessible on the network
+    app.run(host='0.0.0.0', debug=False, port=int(os.environ.get("PORT", 5000)))
