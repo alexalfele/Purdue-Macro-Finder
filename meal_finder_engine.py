@@ -9,7 +9,7 @@ import time
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from google import genai
+from google import genai  # <-- REVERTED to your original, correct import
 from config import Config
 
 # Use Flask's logger if available, or create a new one
@@ -57,8 +57,10 @@ class MealFinder:
         if not self.api_key:
             logger.warning("GEMINI_API_KEY not found. AI suggestions will be disabled.")
         else:
-            genai.configure(api_key=self.api_key)
-            self.ai_model = genai.GenerativeModel(Config.GEMINI_MODEL)
+            # --- UPDATED per your instruction ---
+            # Use the Client() method for the 'google-genai' library
+            self.ai_client = genai.Client(api_key=self.api_key)
+            # --- END OF UPDATE ---
 
 
     def _ensure_current_date(self):
@@ -331,7 +333,13 @@ Your Response:
 """
         
         try:
-            response = self.ai_model.generate_content(prompt)
+            # --- UPDATED per your instruction ---
+            # Use the client.models.generate_content method
+            response = self.ai_client.models.generate_content(
+                model=Config.GEMINI_MODEL,
+                contents=prompt
+            )
+            # --- END OF UPDATE ---
             
             clean_response = response.text.strip().lstrip("```json").rstrip("```")
             ai_data = json.loads(clean_response)
