@@ -1,158 +1,499 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>import os
-from datetime import datetime
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from meal_finder_engine import MealFinder
-import threading
-import time 
-import re 
-import requests
-
-# --- 1. SETUP THE FLASK APP ---
-app = Flask(__name__)
-CORS(app) 
-
-# --- 2. KEEP-ALIVE CONFIGURATION ---
-KEEP_ALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL", "")  # Render sets this automatically
-KEEP_ALIVE_INTERVAL = 840  # 14 minutes (Render free tier spins down after 15 min)
-
-def keep_alive_ping():
-    """Pings the server periodically to prevent spin-down"""
-    while True:
-        time.sleep(KEEP_ALIVE_INTERVAL)
-        if KEEP_ALIVE_URL:
-            try:
-                requests.get(f"{KEEP_ALIVE_URL}/", timeout=10)
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Keep-alive ping successful")
-            except Exception as e:
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] Keep-alive ping failed: {e}")
-
-# --- 3. LAZY INITIALIZATION SETUP ---
-meal_finder_engine = None
-engine_lock = threading.Lock()
-
-def cleanup_old_caches():
-    """Cleans up old cache files from previous days."""
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    print(f"Cleaning caches, keeping files for: {today_str}")
-    for filename in os.listdir('.'): 
-        is_menu_cache = filename.startswith("menu_cache_")
-        is_ai_cache = filename.startswith("ai_cache_")
-        
-        if (is_menu_cache or is_ai_cache) and today_str not in filename:
-            try: 
-                os.remove(filename)
-                print(f"Removed old cache: {filename}")
-            except OSError as e: 
-                print(f"Error removing old cache file {filename}: {e}")
-
-def get_engine():
-    """Initializes and returns the MealFinder engine (thread-safe)."""
-    global meal_finder_engine
-    if meal_finder_engine:
-        return meal_finder_engine
-    
-    with engine_lock:
-        if meal_finder_engine:
-            return meal_finder_engine
-            
-        print("FIRST REQUEST: Initializing MealFinder engine...")
-        cleanup_old_caches()
-        
-        meal_finder_engine = MealFinder()
-        
-        print("FIRST REQUEST: Starting background data loaders...")
-        meal_finder_engine.start_background_loaders()
-        print("FIRST REQUEST: Initialization complete. Engine is live.")
-        
-        return meal_finder_engine
-
-# --- 4. HEALTH CHECK ROUTE ---
-@app.route("/")
-def health_check():
-    """A simple route to confirm the server is running."""
-    return jsonify({"status": "healthy", "message": "Purdue Macro Finder API is running."})
-
-# --- 5. API ENDPOINTS ---
-@app.route("/api/find_meal", methods=["POST"])
-def api_find_meal():
-    engine = get_engine() 
-    if not engine.data_loaded:
-        return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
-    
-    try:
-        data = request.json
-        targets = data.get('targets', {})
-        meal_periods = data.get('meal_periods', []) 
-        dietary_filters = data.get('dietary_filters', {})
-        exclusion_list = data.get('exclusion_list', [])
-
-        if not meal_periods:
-            return jsonify({"error": "Please select at least one meal period."}), 400
-
-        result = engine.find_best_meal(
-            targets,
-            meal_periods,
-            exclusion_list,
-            dietary_filters
-        )
-        
-        if result is None:
-            return jsonify({"error": "No meal plan found. Try adjusting your filters."}), 404
-
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"Error in /api/find_meal: {e}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/suggest_meal", methods=["POST"])
-def api_suggest_meal():
-    engine = get_engine()
-    if not engine.data_loaded:
-        return jsonify({"error": "Server is still loading menu data. Please try again in a moment."}), 503
-
-    try:
-        data = request.json
-        court = data.get('court')
-        meal = data.get('meal')
-        
-        if not court or not meal:
-            return jsonify({"error": "Court and meal period are required."}), 400
-            
-        suggestion = engine.get_ai_suggestion(court, meal)
-        
-        if isinstance(suggestion, dict) and suggestion.get("status") == "loading":
-            return jsonify({"error": "AI suggestions are still being pre-loaded. Please try again in a moment."}), 503
-            
-        return jsonify(suggestion)
-        
-    except Exception as e:
-        print(f"Error in /api/suggest_meal: {e}")
-        return jsonify({"error": str(e)}), 500
-
-# --- 6. START THE SERVER ---
-if __name__ == "__main__":
-    # Start keep-alive thread if URL is available
-    if KEEP_ALIVE_URL:
-        keep_alive_thread = threading.Thread(
-            target=keep_alive_ping,
-            daemon=True,
-            name="KeepAlive"
-        )
-        keep_alive_thread.start()
-        print(f"Keep-alive thread started (pinging every {KEEP_ALIVE_INTERVAL}s)")
-    
-    print("Starting Flask development server...")
-    get_engine() 
-    app.run(debug=False, port=int(os.environ.get("PORT", 5000)))
+<head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Find the perfect meal at Purdue dining courts based on your macro targets">
     <title>Purdue Macro Finder</title>
-    <link rel="stylesheet" href="style.css">
+    <style>
+        /* --- 1. CSS VARIABLES & RESET --- */
+        :root {
+            --purdue-gold: #CFB991;
+            --purdue-dark: #231F20;
+            --bg-primary: #18181b;
+            --bg-secondary: #27272a;
+            --bg-tertiary: #3f3f46;
+            --border-color: #52525b;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --success: #22c55e;
+            --warning: #fbbf24;
+            --error: #ef4444;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 1.5rem;
+            line-height: 1.6;
+        }
+
+        /* --- 2. HEADER --- */
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .header h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            color: var(--purdue-gold);
+            margin: 0;
+        }
+
+        /* --- 3. LAYOUT --- */
+        .app-container {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1.5rem;
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        @media (min-width: 1024px) {
+            .app-container {
+                grid-template-columns: 40% 1fr;
+            }
+        }
+
+        .controls-panel, .results-panel {
+            background-color: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .results-panel {
+            min-height: 500px;
+        }
+
+        /* --- 4. TABS --- */
+        .tab-buttons {
+            display: flex;
+            border-bottom: 2px solid var(--border-color);
+            margin-bottom: 1.5rem;
+        }
+
+        .tab-button {
+            flex: 1;
+            background-color: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: var(--text-secondary);
+            padding: 1rem;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            margin-bottom: -2px;
+        }
+
+        .tab-button:hover {
+            color: var(--text-primary);
+            background-color: rgba(207, 185, 145, 0.1);
+        }
+
+        .tab-button.active {
+            color: var(--purdue-gold);
+            border-bottom-color: var(--purdue-gold);
+        }
+
+        .tab-button:focus {
+            outline: 2px solid var(--purdue-gold);
+            outline-offset: -2px;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* --- 5. COLLAPSIBLE CARDS --- */
+        .collapsible-card {
+            background-color: var(--bg-tertiary);
+            border-radius: 6px;
+            margin-bottom: 1rem;
+            border: 1px solid var(--border-color);
+            transition: border-color 0.2s ease;
+        }
+
+        .collapsible-card:hover {
+            border-color: var(--purdue-gold);
+        }
+
+        .collapsible-card summary {
+            font-size: 1.125rem;
+            font-weight: 600;
+            padding: 1rem;
+            cursor: pointer;
+            list-style: none;
+            user-select: none;
+        }
+
+        .collapsible-card summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .collapsible-card summary::before {
+            content: '▶';
+            display: inline-block;
+            margin-right: 0.5rem;
+            transition: transform 0.2s ease;
+        }
+
+        .collapsible-card[open] summary::before {
+            transform: rotate(90deg);
+        }
+
+        .collapsible-card[open] summary {
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .collapsible-card > div {
+            padding: 1rem;
+        }
+
+        /* --- 6. FORMS & INPUTS --- */
+        .card {
+            background-color: var(--bg-tertiary);
+            border-radius: 6px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .card h2, .card h3 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-top: 0;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 0.75rem;
+            background-color: #52525b;
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 1rem;
+            transition: all 0.2s ease;
+        }
+
+        input[type="number"]:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--purdue-gold);
+            box-shadow: 0 0 0 3px rgba(207, 185, 145, 0.2);
+        }
+
+        input[type="number"]:hover,
+        select:hover {
+            border-color: var(--purdue-gold);
+        }
+
+        .macro-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1rem;
+        }
+
+        .filters label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: var(--text-primary);
+            margin-bottom: 0.75rem;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        .filters label:hover {
+            color: var(--purdue-gold);
+        }
+
+        input[type="checkbox"] {
+            width: 1.25em;
+            height: 1.25em;
+            background-color: var(--bg-secondary);
+            border: 2px solid var(--border-color);
+            border-radius: 4px;
+            accent-color: var(--purdue-gold);
+            cursor: pointer;
+        }
+
+        /* --- 7. BUTTONS --- */
+        .cta-footer {
+            margin-top: auto;
+            padding-top: 1.5rem;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .cta-button {
+            width: 100%;
+            padding: 1rem;
+            background-color: var(--purdue-gold);
+            color: var(--purdue-dark);
+            border: none;
+            border-radius: 6px;
+            font-size: 1.125rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .cta-button:hover {
+            background-color: #A68A56;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(207, 185, 145, 0.3);
+        }
+
+        .cta-button:active {
+            transform: translateY(0);
+        }
+
+        .cta-button:disabled {
+            background-color: #555;
+            color: #999;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .cta-button:focus {
+            outline: 2px solid var(--purdue-gold);
+            outline-offset: 2px;
+        }
+
+        #reset-button {
+            width: 100%;
+            padding: 0.75rem;
+            background-color: transparent;
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-size: 1rem;
+            cursor: pointer;
+            margin-top: 1rem;
+            transition: all 0.2s ease;
+        }
+
+        #reset-button:hover {
+            background-color: var(--bg-tertiary);
+            color: var(--text-primary);
+            border-color: var(--purdue-gold);
+        }
+
+        #status-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            text-align: center;
+            margin-top: 1rem;
+            min-height: 1.25em;
+            transition: color 0.2s ease;
+        }
+
+        /* --- 8. LOADING STATES --- */
+        .hidden {
+            display: none !important;
+        }
+
+        #results-placeholder {
+            text-align: center;
+            color: var(--text-secondary);
+            padding: 4rem 0;
+        }
+
+        #results-placeholder h3 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        #loading-spinner {
+            text-align: center;
+            padding: 4rem 0;
+            color: var(--text-secondary);
+        }
+
+        .spinner {
+            width: 48px;
+            height: 48px;
+            border: 5px solid var(--border-color);
+            border-bottom-color: var(--purdue-gold);
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 1s linear infinite;
+        }
+
+        .spinner-inline {
+            width: 16px;
+            height: 16px;
+            border: 2px solid var(--purdue-dark);
+            border-bottom-color: transparent;
+            border-radius: 50%;
+            display: inline-block;
+            box-sizing: border-box;
+            animation: rotation 0.8s linear infinite;
+            margin-right: 0.5rem;
+            vertical-align: middle;
+        }
+
+        @keyframes rotation {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* --- 9. RESULTS PANEL --- */
+        #result-header {
+            font-size: 1.875rem;
+            font-weight: 700;
+            color: var(--purdue-gold);
+            margin-bottom: 1.5rem;
+        }
+
+        .explanation-card {
+            background-color: #3f462a;
+            border: 1px solid var(--purdue-gold);
+        }
+
+        .explanation-card h3 {
+            color: var(--purdue-gold);
+            border-bottom-color: var(--purdue-gold);
+        }
+
+        .explanation-card p {
+            color: var(--text-primary);
+            line-height: 1.6;
+            margin: 0;
+        }
+
+        /* --- 10. MEAL ITEMS --- */
+        .item-card {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 1rem;
+            background-color: var(--bg-secondary);
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 0.75rem;
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+        }
+
+        .item-card:hover {
+            border-color: var(--purdue-gold);
+            transform: translateX(4px);
+        }
+
+        .item-info h4 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0 0 0.25rem 0;
+            color: var(--text-primary);
+        }
+
+        .item-info p {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .item-macros {
+            text-align: right;
+            font-size: 0.875rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .item-macros span {
+            display: block;
+            font-weight: 500;
+            margin: 0.125rem 0;
+        }
+
+        .item-macros .p {
+            color: #6ee7b7;
+        }
+
+        .item-macros .c {
+            color: #7dd3fc;
+        }
+
+        .item-macros .f {
+            color: #fde047;
+        }
+
+        /* --- 11. CHART --- */
+        .chart-container {
+            position: relative;
+            max-width: 300px;
+            margin: auto;
+        }
+
+        /* --- 12. RESPONSIVE --- */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            .header h1 {
+                font-size: 1.75rem;
+            }
+
+            .macro-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .item-card {
+                grid-template-columns: 1fr;
+            }
+
+            .item-macros {
+                text-align: left;
+                flex-direction: row;
+                gap: 1rem;
+            }
+        }
+
+        /* --- 13. ACCESSIBILITY --- */
+        @media (prefers-reduced-motion: reduce) {
+            * {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+
+        *:focus-visible {
+            outline: 2px solid var(--purdue-gold);
+            outline-offset: 2px;
+        }
+    </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -258,8 +599,8 @@ if __name__ == "__main__":
                                 Dinner
                             </label>
                             <label>
-                                <input type="checkbox" name="meal_period" value="Late Lunch" aria-label="Include Late Lunch">
-                                Late Lunch
+                                <input type="checkbox" name="meal_period" value="Late Night" aria-label="Include late night">
+                                Late Night
                             </label>
                         </div>
                     </details>
@@ -323,6 +664,248 @@ if __name__ == "__main__":
         </div>
     </div>
 
-    <script src="script.js"></script>
-</body>
-</html>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // --- 1. CONFIGURATION ---
+            const API_BASE_URL = "https://purdue-macro-finder.onrender.com";
+            const RETRY_DELAY = 5000;
+            const MAX_RETRIES = 3;
+            
+            // --- 2. GET REFERENCES TO HTML ELEMENTS ---
+            const tabButtons = document.querySelectorAll('.tab-button');
+            const tabContents = document.querySelectorAll('.tab-content');
+            const aiForm = document.getElementById('ai-form');
+            const manualForm = document.getElementById('manual-form');
+            const aiCourt = document.getElementById('ai-court');
+            const aiMeal = document.getElementById('ai-meal');
+            const targetProtein = document.getElementById('target-protein');
+            const targetCarbs = document.getElementById('target-carbs');
+            const targetFat = document.getElementById('target-fat');
+            const filterCheckboxes = document.querySelectorAll('.filters input[data-filter]');
+            const mealPeriodCheckboxes = document.querySelectorAll('input[name="meal_period"]');
+            const generateButton = document.getElementById('generate-button');
+            const resetButton = document.getElementById('reset-button');
+            const statusLabel = document.getElementById('status-label');
+            const resultsPlaceholder = document.getElementById('results-placeholder');
+            const loadingSpinner = document.getElementById('loading-spinner');
+            const resultsContent = document.getElementById('results-content');
+            const resultHeader = document.getElementById('result-header');
+            const aiExplanation = document.getElementById('ai-explanation');
+            const aiExplanationText = document.getElementById('ai-explanation-text');
+            const chartCanvas = document.getElementById('macro-chart').getContext('2d');
+            const mealPlanItems = document.getElementById('meal-plan-items');
+            
+            // --- 3. GLOBAL STATE VARIABLES ---
+            let activeTab = 'ai';
+            let macroChart = null;
+            let currentRetryTimeout = null;
+            let retryCount = 0;
+
+            // --- 4. UTILITY FUNCTIONS ---
+            function debounce(func, wait) {
+                let timeout;
+                return function executedFunction(...args) {
+                    const later = () => {
+                        clearTimeout(timeout);
+                        func(...args);
+                    };
+                    clearTimeout(timeout);
+                    timeout = setTimeout(later, wait);
+                };
+            }
+
+            function validateMacroInput(value, macroName) {
+                const num = parseInt(value) || 0;
+                if (num < 0) {
+                    return { valid: false, message: `${macroName} cannot be negative` };
+                }
+                if (num > 500) {
+                    return { valid: false, message: `${macroName} seems unreasonably high` };
+                }
+                return { valid: true };
+            }
+
+            // --- 5. INPUT VALIDATION ---
+            const validateInputs = debounce(() => {
+                if (activeTab === 'manual') {
+                    const protein = parseInt(targetProtein.value) || 0;
+                    const carbs = parseInt(targetCarbs.value) || 0;
+                    const fat = parseInt(targetFat.value) || 0;
+                    
+                    if (protein > 100) {
+                        statusLabel.textContent = '⚠️ High protein target';
+                        statusLabel.style.color = '#fbbf24';
+                    } else if (protein === 0 && carbs === 0 && fat === 0) {
+                        statusLabel.textContent = 'Set your macro targets';
+                        statusLabel.style.color = '#a1a1aa';
+                    } else {
+                        statusLabel.textContent = 'Ready to generate';
+                        statusLabel.style.color = '#a1a1aa';
+                    }
+                }
+            }, 500);
+            
+            targetProtein.addEventListener('input', validateInputs);
+            targetCarbs.addEventListener('input', validateInputs);
+            targetFat.addEventListener('input', validateInputs);
+
+            // --- 6. EVENT LISTENERS ---
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    activeTab = button.dataset.tab;
+                    setActiveTab(activeTab);
+                });
+            });
+
+            generateButton.addEventListener('click', () => {
+                if (currentRetryTimeout) {
+                    clearTimeout(currentRetryTimeout);
+                    currentRetryTimeout = null;
+                }
+                retryCount = 0;
+                
+                if (activeTab === 'ai') {
+                    handleAiSuggestion();
+                } else {
+                    handleManualSearch();
+                }
+            });
+            
+            resetButton.addEventListener('click', () => {
+                aiForm.reset();
+                manualForm.reset();
+                
+                mealPeriodCheckboxes.forEach(cb => {
+                    cb.checked = (cb.value === 'Lunch' || cb.value === 'Dinner');
+                });
+                
+                if (macroChart) {
+                    macroChart.destroy();
+                    macroChart = null;
+                }
+                
+                showPlaceholder('Select a tab and generate a meal.');
+                statusLabel.textContent = 'Cleared. Ready to go!';
+                statusLabel.style.color = '#a1a1aa';
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !generateButton.disabled && 
+                    document.activeElement.tagName !== 'INPUT') {
+                    generateButton.click();
+                }
+                if (e.key === 'Escape') {
+                    resetButton.click();
+                }
+            });
+
+            // --- 7. CORE API FUNCTIONS ---
+            async function handleAiSuggestion() {
+                const payload = {
+                    court: aiCourt.value,
+                    meal: aiMeal.value,
+                };
+                
+                showLoadingState('Asking AI for a smart suggestion...');
+                
+                try {
+                    const result = await makeApiCall('/api/suggest_meal', payload);
+                    displayResult(result, true);
+                    retryCount = 0;
+                } catch (error) {
+                    handleApiError(error);
+                }
+            }
+
+            async function handleManualSearch() {
+                const protein = parseInt(targetProtein.value) || 0;
+                const carbs = parseInt(targetCarbs.value) || 0;
+                const fat = parseInt(targetFat.value) || 0;
+                
+                const proteinValidation = validateMacroInput(protein, 'Protein');
+                if (!proteinValidation.valid) {
+                    showPlaceholder(proteinValidation.message);
+                    return;
+                }
+                
+                const selectedMeals = [];
+                mealPeriodCheckboxes.forEach(cb => {
+                    if (cb.checked) {
+                        selectedMeals.push(cb.value);
+                    }
+                });
+                
+                if (selectedMeals.length === 0) {
+                    showPlaceholder('Please select at least one meal period');
+                    return;
+                }
+
+                const selectedFilters = {};
+                filterCheckboxes.forEach(cb => {
+                    if (cb.checked) {
+                        selectedFilters[cb.dataset.filter] = true;
+                    }
+                });
+
+                const payload = {
+                    targets: { p: protein, c: carbs, f: fat },
+                    meal_periods: selectedMeals,
+                    dietary_filters: selectedFilters,
+                    exclusion_list: []
+                };
+                
+                showLoadingState('Calculating the best meal plan...');
+
+                try {
+                    const result = await makeApiCall('/api/find_meal', payload);
+                    displayResult(result, false);
+                    retryCount = 0;
+                } catch (error) {
+                    handleApiError(error);
+                }
+            }
+            
+            async function makeApiCall(endpoint, payload) {
+                try {
+                    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        signal: AbortSignal.timeout(30000)
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        if (response.status === 503) {
+                            throw new Error('503:still_loading');
+                        }
+                        if (response.status === 429) {
+                            throw new Error('429:rate_limit');
+                        }
+                        throw new Error(data.error || `HTTP error! Status: ${response.status}`);
+                    }
+                    
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    
+                    return data;
+                    
+                } catch (error) {
+                    if (error.name === 'TimeoutError') {
+                        throw new Error('Request timed out. Please try again.');
+                    }
+                    throw error;
+                }
+            }
+
+            // --- 8. UI/DOM HELPER FUNCTIONS ---
+            function setActiveTab(tabName) {
+                tabButtons.forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.tab === tabName);
+                });
+                tabContents.forEach(content => {
+                    content.classList.toggle('active', content.id === tabName);
+                });
+                status
