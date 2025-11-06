@@ -13,8 +13,9 @@ app = Flask(__name__)
 CORS(app) 
 
 # --- 2. KEEP-ALIVE CONFIGURATION ---
-KEEP_ALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL", "")  # Render sets this automatically
-KEEP_ALIVE_INTERVAL = 840  # 14 minutes (Render free tier spins down after 15 min)
+KEEP_ALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
+KEEP_ALIVE_INTERVAL = 840  # 14 minutes
+ENABLE_KEEP_ALIVE = os.environ.get("ENABLE_KEEP_ALIVE", "true").lower() == "true"
 
 def keep_alive_ping():
     """Pings the server periodically to prevent spin-down"""
@@ -133,8 +134,8 @@ def api_suggest_meal():
 
 # --- 6. START THE SERVER ---
 if __name__ == "__main__":
-    # Start keep-alive thread if URL is available
-    if KEEP_ALIVE_URL:
+    # Start keep-alive thread if enabled and URL is available
+    if ENABLE_KEEP_ALIVE and KEEP_ALIVE_URL:
         keep_alive_thread = threading.Thread(
             target=keep_alive_ping,
             daemon=True,
@@ -142,6 +143,8 @@ if __name__ == "__main__":
         )
         keep_alive_thread.start()
         print(f"Keep-alive thread started (pinging every {KEEP_ALIVE_INTERVAL}s)")
+    else:
+        print("Keep-alive disabled or URL not available")
     
     print("Starting Flask development server...")
     get_engine() 
