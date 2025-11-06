@@ -292,11 +292,17 @@ class MealFinder:
             try:
                 with open(self.ai_cache_file, 'r') as f:
                     data_from_disk = json.load(f)
+                    
                     with self.cache_lock:
-                        # Convert list keys back to tuples
-                        self.ai_suggestions_cache = {
-                            tuple(k): v for k, v in data_from_disk.items()
-                        }
+                        # Convert string keys "Court|Meal" back to tuples
+                        self.ai_suggestions_cache = {}
+                        for k, v in data_from_disk.items():
+                            try:
+                                court, meal = k.split('|')
+                                self.ai_suggestions_cache[(court, meal)] = v
+                            except ValueError:
+                                logger.warning(f"Skipping malformed cache key: {k}")
+                                
                     logger.info(f"Loaded {len(self.ai_suggestions_cache)} AI suggestions")
             except (json.JSONDecodeError, TypeError) as e:
                 logger.error(f"Failed to read AI cache: {e}")
@@ -305,9 +311,13 @@ class MealFinder:
     def _save_ai_cache_to_disk(self):
         """Saves the current AI suggestion cache to a JSON file."""
         try:
+            data_to_save = {}
             with self.cache_lock:
-                # Convert tuple keys to lists for JSON
-                data_to_save = {list(k): v for k, v in self.ai_suggestions_cache.items()}
+                # Convert tuple keys (Court, Meal) to simple string "Court|Meal"
+                for k, v in self.ai_suggestions_cache.items():
+                    if isinstance(k, tuple) and len(k) == 2:
+                        string_key = f"{k[0]}|{k[1]}"
+                        data_to_save[string_key] = v
             
             with open(self.ai_cache_file, 'w') as f:
                 json.dump(data_to_save, f)
@@ -328,7 +338,7 @@ class MealFinder:
         ]
         
         if not available_items:
-            return {"error": "No items found for this dining court and meal."}
+            return {"error": f"No items found for {court_name} at {meal_name}."}
         
         # Build food list string
         food_list_str = "\n".join([
@@ -359,14 +369,16 @@ Example:
 """
         
         try:
-            client = genai.Client(api_key=self.api_key)
-            response = client.models.generate_content(
-                model=f"models/{Config.GEMINI_MODEL}",
-                contents=prompt
-            )
+            # --- UPDATED API CALL ---
+            genai.configure(api_key=self.api_key)
+            model = genai.GenerativeModel(Config.GEMINI_MODEL)
+            response = model.generate_content(prompt)
+            # --- END OF UPDATE ---
             
             # Parse response
-            clean_response = response.text.strip().replace("```json", "").replace("```", "")
+            # Added guard for "json" markers
+            clean_response = response.text.strip().lstrip("```json").rstrip("```")
+            
             ai_data = json.loads(clean_response)
             
             suggested_names = ai_data.get("foods", [])
@@ -380,16 +392,19 @@ Example:
             totals_map = {'p': 0, 'c': 0, 'f': 0}
             
             for name in suggested_names:
-                for item in available_items:
-                    if item['name'] == name:
-                        suggestion.append(item)
-                        totals_map['p'] += item.get('p', 0)
-                        totals_map['c'] += item.get('c', 0)
-                        totals_map['f'] += item.get('f', 0)
-                        break
+                # Find the item in the list
+                found_item = next((item for item in available_items if item['name'] == name), None)
+                
+                if found_item:
+                    suggestion.append(found_item)
+                    totals_map['p'] += found_item.get('p', 0)
+                    totals_map['c'] += found_item.get('c', 0)
+                    totals_map['f'] += found_item.get('f', 0)
             
             if not suggestion:
-                return {"error": "AI could not find a valid combination."}
+                # This can happen if the AI hallucinates a food name
+                logger.warning(f"AI for {court_name}/{meal_name} suggested foods not on the menu: {suggested_names}")
+                return {"error": "AI suggested foods that are not available."}
             
             totals_map['calories'] = (
                 (totals_map['p'] * 4) +
@@ -407,13 +422,16 @@ Example:
         
         except Exception as e:
             # Handle rate limiting with retry
-            if "429" in str(e) and "RESOURCE_EXHAUSTED" in str(e) and not is_retry:
+            if "429" in str(e) and not is_retry:
                 logger.warning(f"Rate limit hit for {court_name}/{meal_name}, retrying...")
                 delay = random.randint(Config.RETRY_DELAY_MIN, Config.RETRY_DELAY_MAX)
                 time.sleep(delay)
                 return self._fetch_ai_suggestion_from_api(court_name, meal_name, is_retry=True)
             
             logger.error(f"Gemini API error for {court_name}/{meal_name}: {e}")
+            logger.error(f"Failed prompt: {prompt}")
+            if "response" in locals():
+                logger.error(f"Raw AI Response: {response.text}")
             return {"error": "The AI suggestion failed. Try again."}
 
     def get_ai_suggestion(self, court_name, meal_name):
@@ -427,9 +445,12 @@ Example:
         
         cache_key = (court_name, meal_name)
         
-        # Check cache
-        if cache_key in self.ai_suggestions_cache:
-            return self.ai_suggestions_cache[cache_key]
+        # --- ADDED LOCK FOR THREAD-SAFE READ ---
+        with self.cache_lock:
+            # Check cache
+            if cache_key in self.ai_suggestions_cache:
+                return self.ai_suggestions_cache[cache_key]
+        # --- END OF UPDATE ---
         
         # Generate on-demand
         logger.info(f"Cache miss for {court_name}/{meal_name}, generating...")
@@ -510,7 +531,7 @@ Example:
         """Starts background threads for menu and AI loading."""
         logger.info("Starting background loaders...")
         
-        # Thread 1: Load menus
+        # Thread 1: Load menus (Always do this)
         menu_loader_thread = threading.Thread(
             target=self._load_all_menu_data,
             daemon=True,
@@ -518,13 +539,19 @@ Example:
         )
         menu_loader_thread.start()
         
-        # Thread 2: Load AI suggestions
-        ai_loader_thread = threading.Thread(
-            target=self._background_preloader_task,
-            daemon=True,
-            name="AIPreloader"
-        )
-        ai_loader_thread.start()
+        # Thread 2: Load AI suggestions (ONLY if enabled)
+        if Config.AI_PRELOAD_ON_STARTUP:
+            logger.info("AI preloading is ENABLED. Warming cache...")
+            ai_loader_thread = threading.Thread(
+                target=self._background_preloader_task,
+                daemon=True,
+                name="AIPreloader"
+            )
+            ai_loader_thread.start()
+        else:
+            logger.info("AI preloading is DISABLED. Suggestions will be on-demand.")
+            # Load any existing suggestions from disk
+            self._load_ai_cache_from_disk()
 
     # --- MEAL FINDING ALGORITHM ---
 
