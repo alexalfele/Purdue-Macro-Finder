@@ -9,7 +9,7 @@ import time
 import logging
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from google import genai  # <-- REVERTED to your original, correct import
+from google import genai
 from config import Config
 
 # Use Flask's logger if available, or create a new one
@@ -45,8 +45,11 @@ class MealFinder:
         # Data storage
         self.master_item_list = []
         self.data_loaded = False
-        self.ai_suggestions_cache = {} # Will now store { "user goal string": {"p": 50, ...} }
-        self.cache_lock = threading.Lock()
+        self.ai_suggestions_cache = {} 
+        
+        # Locks for thread safety
+        self.cache_lock = threading.Lock() # For AI cache
+        self.data_lock = threading.Lock()  # For Menu data (FIX ADDED)
         
         # Performance indices
         self.items_by_court = {}  # court -> [items]
@@ -57,10 +60,7 @@ class MealFinder:
         if not self.api_key:
             logger.warning("GEMINI_API_KEY not found. AI suggestions will be disabled.")
         else:
-            # --- UPDATED per your instruction ---
-            # Use the Client() method for the 'google-genai' library
             self.ai_client = genai.Client(api_key=self.api_key)
-            # --- END OF UPDATE ---
 
 
     def _ensure_current_date(self):
@@ -71,12 +71,17 @@ class MealFinder:
             self.todays_date = current_date
             self.cache_file = f"{Config.CACHE_PREFIX_MENU}{self.todays_date}.json"
             self.ai_cache_file = f"{Config.CACHE_PREFIX_AI}{self.todays_date}.json"
-            self.master_item_list = []
-            self.data_loaded = False
-            self.items_by_court.clear()
-            self.items_by_meal.clear()
-            # Clear AI cache as well, as targets might be context-dependent (though unlikely)
-            self.ai_suggestions_cache.clear()
+            
+            # Securely clear data
+            with self.data_lock:
+                self.master_item_list = []
+                self.items_by_court.clear()
+                self.items_by_meal.clear()
+                self.data_loaded = False
+            
+            # Clear AI cache as well
+            with self.cache_lock:
+                self.ai_suggestions_cache.clear()
             return True
         return False
 
@@ -148,6 +153,7 @@ class MealFinder:
 
     def _build_indices(self):
         """Build lookup indices after loading data for faster filtering."""
+        # Note: This should be called within a data_lock block
         self.items_by_court.clear()
         self.items_by_meal.clear()
         
@@ -191,6 +197,9 @@ class MealFinder:
             except (json.JSONDecodeError, IOError) as e:
                 logger.error(f"Error loading cache file: {e}")
         
+        # Temporary list to collect items before locking
+        temp_master_list = []
+        
         with ThreadPoolExecutor() as executor:
             future_to_court = {
                 executor.submit(self._get_menu_data_for_court, court, cached_data): court
@@ -232,7 +241,8 @@ class MealFinder:
                                                 if trait
                                             ] if core_item.get('traits') else []
                                             
-                                            self.master_item_list.append({
+                                            # Append to temp list instead of self.master_item_list
+                                            temp_master_list.append({
                                                 "name": item_appearance['displayName'],
                                                 "p": macros['Protein'],
                                                 "c": macros['Total Carbohydrate'],
@@ -243,6 +253,12 @@ class MealFinder:
                                                 "serving_size": serving_size
                                             })
         
+        # Critical Section: Update the master list safely
+        with self.data_lock:
+            self.master_item_list = temp_master_list
+            self._build_indices()
+            self.data_loaded = True
+            
         if needs_to_save_cache:
             try:
                 with open(self.cache_file, 'w') as f:
@@ -254,11 +270,9 @@ class MealFinder:
             except IOError as e:
                 logger.error(f"Error saving cache file: {e}")
         
-        self._build_indices()
-        self.data_loaded = True
-        logger.info(f"Menu data load complete. {len(self.master_item_list)} items loaded.")
+        logger.info(f"Menu data load complete. {len(temp_master_list)} items loaded.")
 
-    # --- AI SUGGESTION METHODS (NEW) ---
+    # --- AI SUGGESTION METHODS ---
 
     def _load_ai_cache_from_disk(self):
         """Loads the AI *target* cache from a JSON file."""
@@ -268,7 +282,6 @@ class MealFinder:
             logger.info(f"Loading AI target cache from {self.ai_cache_file}")
             try:
                 with open(self.ai_cache_file, 'r') as f:
-                    # The cache file just stores { "goal string": { "p": ... } }
                     data_from_disk = json.load(f)
                     with self.cache_lock:
                         self.ai_suggestions_cache = data_from_disk
@@ -281,7 +294,6 @@ class MealFinder:
         """Saves the current AI *target* cache to a JSON file."""
         try:
             with self.cache_lock:
-                # The cache is already in a simple { "goal": { ... } } format
                 data_to_save = self.ai_suggestions_cache
             
             with open(self.ai_cache_file, 'w') as f:
@@ -333,18 +345,26 @@ Your Response:
 """
         
         try:
-            # --- UPDATED per your instruction ---
-            # Use the client.models.generate_content method
             response = self.ai_client.models.generate_content(
                 model=Config.GEMINI_MODEL,
                 contents=prompt
             )
-            # --- END OF UPDATE ---
             
-            clean_response = response.text.strip().lstrip("```json").rstrip("```")
+            # --- FIX 1: Robust Response Parsing ---
+            clean_response = response.text.strip()
+            
+            # Handle Markdown code blocks
+            if clean_response.startswith("```json"):
+                clean_response = clean_response[7:] 
+            if clean_response.startswith("```"):
+                clean_response = clean_response[3:]
+            if clean_response.endswith("```"):
+                clean_response = clean_response[:-3]
+                
+            clean_response = clean_response.strip()
+            
             ai_data = json.loads(clean_response)
             
-            # Validate the AI's output
             if 'p' not in ai_data or 'c' not in ai_data or 'f' not in ai_data:
                 raise ValueError("AI response missing required p, c, or f keys.")
                 
@@ -366,8 +386,6 @@ Your Response:
                 return self._get_macros_from_ai_api(user_goal, is_retry=True)
             
             logger.error(f"Gemini API error for goal '{user_goal}': {e}")
-            if "response" in locals():
-                logger.error(f"Raw AI Response: {response.text}")
             return {"error": "The AI failed to interpret your goal. Try rephrasing."}
 
     def get_macros_from_ai(self, user_goal):
@@ -377,7 +395,6 @@ Your Response:
             while not self.data_loaded:
                 time.sleep(0.5)
         
-        # Normalize the goal string for better cache hits
         cache_key = user_goal.strip().lower()
         
         with self.cache_lock:
@@ -385,11 +402,9 @@ Your Response:
                 logger.info(f"AI target cache HIT for: '{user_goal}'")
                 return self.ai_suggestions_cache[cache_key]
         
-        # Cache miss, call the API
         logger.info(f"AI target cache MISS for: '{user_goal}'. Calling API...")
         result = self._get_macros_from_ai_api(user_goal)
         
-        # Update cache if successful
         if "error" not in result:
             with self.cache_lock:
                 self.ai_suggestions_cache[cache_key] = result
@@ -401,7 +416,6 @@ Your Response:
         """Starts background threads for menu and AI loading."""
         logger.info("Starting background loaders...")
         
-        # Thread 1: Load menus (Always do this)
         menu_loader_thread = threading.Thread(
             target=self._load_all_menu_data,
             daemon=True,
@@ -409,8 +423,6 @@ Your Response:
         )
         menu_loader_thread.start()
         
-        # Thread 2: Load existing AI target cache from disk
-        # We no longer pre-load, just load what's already saved.
         ai_cache_loader_thread = threading.Thread(
             target=self._load_ai_cache_from_disk,
             daemon=True,
@@ -433,10 +445,24 @@ Your Response:
         iterations = Config.ITERATIONS
         
         initial_size = min(Config.INITIAL_ITEMS, len(available_items))
-        if not available_items or len(available_items) < initial_size:
-            return None, float('inf'), {} # Not enough items
-            
-        current_solution = random.sample(available_items, initial_size)
+        
+        # --- FIX 2: Heuristic Seeding ---
+        # Instead of purely random items, seed with high-protein items
+        # (since protein is usually the hardest constraint)
+        
+        # Sort items by protein content (descending)
+        sorted_by_protein = sorted(available_items, key=lambda x: x.get('p', 0), reverse=True)
+        
+        # Pick top 2 best protein items, then randoms for the rest
+        current_solution = sorted_by_protein[:2]
+        
+        items_needed = initial_size - len(current_solution)
+        if items_needed > 0:
+            remaining_pool = [i for i in available_items if i not in current_solution]
+            if remaining_pool:
+                current_solution += random.sample(remaining_pool, min(items_needed, len(remaining_pool)))
+        
+        # --------------------------------
         
         for _ in range(iterations):
             if temp <= 1:
@@ -486,8 +512,13 @@ Your Response:
             logger.warning("find_best_meal called before data was loaded.")
             return None
         
+        # --- FIX 3: Thread-Safe Snapshot ---
+        with self.data_lock:
+            snapshot_items = self.master_item_list[:]
+        # -----------------------------------
+        
         filtered_master_list = []
-        for item in self.master_item_list:
+        for item in snapshot_items:
             traits = item.get('traits', [])
             passes_filter = True
             
